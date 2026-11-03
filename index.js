@@ -1,18 +1,89 @@
 /**
  * EZAgent host half.
  *
- * The EZCloud gateway answers its real responses without CORS headers (only
- * preflight `OPTIONS` carries them), so a browser cannot call it directly from
- * the DSH page. This half performs the sign-in over Node's network stack and
- * exposes it to the client at `/ezagent/ezcloud/*`, which the page reaches
- * same-origin (the desktop shell forwards `dsh-app://app/…` to this server).
+ * Two jobs live here:
+ *
+ * 1. The EZCloud gateway answers its real responses without CORS headers (only
+ *    preflight `OPTIONS` carries them), so a browser cannot call it directly
+ *    from the DSH page. This half performs sign-in, account reads, and the
+ *    model catalog over Node's network stack and exposes them at
+ *    `/ezagent/ezcloud/*`, which the page reaches same-origin (the desktop
+ *    shell forwards `dsh-app://app/…` to this server).
+ *
+ * 2. It registers an `ezcloud` provider with the host LLM registry, so the
+ *    account's models show up in DSH's own model picker and stream through the
+ *    OpenAI-compatible endpoint at `/v1/chat/completions`. Before sign-in the
+ *    provider advertises no models, which makes the group disappear from the
+ *    picker entirely.
  */
+
+/**
+ * The harness resolves `@deepseek-ai/*` for profile plugins, but a plugin that
+ * is linked from outside the profile's `node_modules` may run where that
+ * routing table is absent (for example when the entry is imported by a plain
+ * Node tool). The dynamic import keeps the plugin loadable either way: with the
+ * harness present we reuse its `LlmAdapter`/`LlmError` identity, and otherwise
+ * the local definitions below keep the provider contract intact.
+ */
+let LlmAdapterBase = class LlmAdapter {
+  providerInfo(provider) {
+    return { id: provider, name: provider };
+  }
+
+  listModels() {
+    return Promise.resolve([]);
+  }
+
+  resolveModel(provider, model) {
+    return Promise.resolve({ provider, id: model, name: model });
+  }
+
+  async prepareCall(provider, model, signal) {
+    return { model: await this.resolveModel(provider, model, signal), stream: (options) => this.stream(options) };
+  }
+};
+let LlmErrorClass = class LlmError extends Error {
+  constructor(message, code, options) {
+    super(message, options);
+    this.name = 'LlmError';
+    this.code = code;
+  }
+};
+let attribution = () => ({});
+try {
+  const dshLlm = await import('@deepseek-ai/dsh-llm');
+  if (typeof dshLlm.LlmAdapter === 'function') LlmAdapterBase = dshLlm.LlmAdapter;
+  if (typeof dshLlm.LlmError === 'function') LlmErrorClass = dshLlm.LlmError;
+  if (typeof dshLlm.attributionHeaders === 'function') attribution = dshLlm.attributionHeaders;
+} catch {
+  // Standalone load: the fallbacks above already satisfy the adapter contract.
+}
+
+const LlmAdapter = LlmAdapterBase;
+const LlmError = LlmErrorClass;
+const attributionHeaders = attribution;
 
 const EZCLOUD_BASE_URL = 'https://api.ezstartai.com';
 const API_KEY_NAME = 'EZAgent';
 const ROUTE_PREFIX = '/ezagent/ezcloud';
+const PROVIDER_ID = 'ezcloud';
+const PROVIDER_NAME = 'EZCloud';
+const CHAT_PATH = '/v1/chat/completions';
 const REQUEST_TIMEOUT_MS = 20000;
 const MAX_BODY_BYTES = 64 * 1024;
+const MODEL_CACHE_MS = 60 * 1000;
+const STATUS_CACHE_MS = 5 * 60 * 1000;
+const PRICING_CACHE_MS = 10 * 60 * 1000;
+const DEFAULT_CONTEXT_WINDOW = 131072;
+const DEFAULT_MAX_TOKENS = 32768;
+const IMAGE_PIXEL_BUDGET = 4194304;
+const IMAGE_BYTE_BUDGET = 1048576;
+
+/** Session the client last announced (in-memory only: the key stays on disk in the page's storage). */
+let liveSession = null;
+let modelCache = { key: '', at: 0, entries: [] };
+let statusCache = { at: 0, creditsPerUsd: 500, quotaPerUnit: 500000 };
+let pricingCache = { at: 0, rows: [], vendors: new Map() };
 
 function sendJson(response, status, payload) {
   const body = JSON.stringify(payload);
@@ -182,6 +253,764 @@ async function signOut(payload) {
   }
 }
 
+//#region session handling
+
+/** Trim an announced session down to the fields the host needs. */
+function normalizeSession(raw) {
+  if (raw === null || typeof raw !== 'object') return null;
+  const apiKey = typeof raw.apiKey === 'string' ? raw.apiKey : '';
+  if (apiKey === '') return null;
+  const deviceKey = typeof raw.deviceKey === 'string' ? raw.deviceKey : '';
+  const accessToken = typeof raw.accessToken === 'string' ? raw.accessToken : '';
+  return {
+    version: 1,
+    baseUrl: typeof raw.baseUrl === 'string' && raw.baseUrl !== '' ? raw.baseUrl : EZCLOUD_BASE_URL,
+    userId: typeof raw.userId === 'number' ? raw.userId : 0,
+    username: typeof raw.username === 'string' ? raw.username : '',
+    displayName: typeof raw.displayName === 'string' ? raw.displayName : '',
+    group: typeof raw.group === 'string' ? raw.group : '',
+    accessToken,
+    deviceKey,
+    apiKey,
+    apiKeyId: typeof raw.apiKeyId === 'number' ? raw.apiKeyId : 0,
+    apiKeyName: typeof raw.apiKeyName === 'string' ? raw.apiKeyName : API_KEY_NAME,
+    signedInAt: typeof raw.signedInAt === 'number' ? raw.signedInAt : Date.now(),
+  };
+}
+
+/**
+ * The session a request belongs to: the one it carries, else the one announced
+ * earlier in this process. Requests carry it so a first paint after a restart
+ * works even before the page's sync call lands.
+ */
+function sessionOf(payload) {
+  const carried = normalizeSession(payload === null || typeof payload !== 'object' ? undefined : payload.session);
+  if (carried !== null) return carried;
+  return liveSession;
+}
+
+function adoptSession(session) {
+  liveSession = session;
+  modelCache = { key: '', at: 0, entries: [] };
+}
+
+function clearSession() {
+  liveSession = null;
+  modelCache = { key: '', at: 0, entries: [] };
+}
+
+/** Authenticated dashboard request. The device key outlives the access token. */
+async function authedJson(path, session, fallback, init) {
+  const token = session.deviceKey !== '' ? session.deviceKey : session.accessToken;
+  if (token === '') throw new Error('登录状态已失效，请重新登录 EZCloud');
+  const options = init === undefined ? {} : init;
+  const body = await ezcloudRequest(path, {
+    ...options,
+    headers: { ...bearer(token), ...(options.headers === undefined ? {} : options.headers) },
+  });
+  return requireSuccess(body, fallback);
+}
+
+//#endregion
+
+//#region account reads
+
+async function fetchStatus() {
+  const now = Date.now();
+  if (statusCache.at !== 0 && now - statusCache.at < STATUS_CACHE_MS) return statusCache;
+  const body = await ezcloudRequest('/api/status');
+  const data = body !== null && typeof body === 'object' && body.data !== null && typeof body.data === 'object' ? body.data : {};
+  const creditsPerUsd = Number(data.credits_per_usd);
+  const quotaPerUnit = Number(data.quota_per_unit);
+  statusCache = {
+    at: now,
+    creditsPerUsd: Number.isFinite(creditsPerUsd) && creditsPerUsd > 0 ? creditsPerUsd : 500,
+    quotaPerUnit: Number.isFinite(quotaPerUnit) && quotaPerUnit > 0 ? quotaPerUnit : 500000,
+  };
+  return statusCache;
+}
+
+async function fetchPricing() {
+  const now = Date.now();
+  if (pricingCache.at !== 0 && now - pricingCache.at < PRICING_CACHE_MS) return pricingCache;
+  const body = requireSuccess(await ezcloudRequest('/api/pricing'), '无法读取 EZCloud 模型目录');
+  const rows = Array.isArray(body.data) ? body.data : [];
+  const vendors = new Map();
+  if (Array.isArray(body.vendors)) {
+    for (const vendor of body.vendors) {
+      if (vendor !== null && typeof vendor === 'object' && Number.isInteger(vendor.id)) {
+        vendors.set(vendor.id, {
+          id: vendor.id,
+          name: typeof vendor.name === 'string' ? vendor.name : '',
+          icon: typeof vendor.icon === 'string' ? vendor.icon : '',
+        });
+      }
+    }
+  }
+  pricingCache = { at: now, rows, vendors };
+  return pricingCache;
+}
+
+/** Model ids the signed-in account's groups may call over the OpenAI-compatible API. */
+async function fetchUsableModels(session) {
+  const body = await authedJson('/api/user/self/models', session, '无法读取账号可用模型');
+  const data = body.data;
+  if (!Array.isArray(data)) return null;
+  return data.filter((name) => typeof name === 'string' && name !== '');
+}
+
+const CONTEXT_HINTS = [
+  [/claude/i, 200000],
+  [/gemini/i, 1048576],
+  [/deepseek/i, 131072],
+  [/kimi|moonshot/i, 262144],
+  [/qwen/i, 131072],
+  [/llama/i, 131072],
+  [/gpt-oss/i, 131072],
+  [/gpt-4o|gpt-4\.1|gpt-4-turbo|gpt-5|gpt-6|^o[1-9]/i, 128000],
+];
+
+/** Context window advertised in prose ("1.05M 上下文", "128K context"), 0 when absent. */
+function contextFromProse(text) {
+  if (typeof text !== 'string' || text === '') return 0;
+  const match = /(\d+(?:\.\d+)?)\s*([KM])\s*(?:上下文|context)/i.exec(text);
+  if (match === null) return 0;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  const unit = match[2].toUpperCase() === 'M' ? 1000000 : 1000;
+  return Math.round(value * unit);
+}
+
+/** Output cap advertised in prose ("128K 输出", "8K output"), 0 when absent. */
+function outputFromProse(text) {
+  if (typeof text !== 'string' || text === '') return 0;
+  const match = /(\d+(?:\.\d+)?)\s*([KM])\s*(?:输出|output)/i.exec(text);
+  if (match === null) return 0;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  const unit = match[2].toUpperCase() === 'M' ? 1000000 : 1000;
+  return Math.round(value * unit);
+}
+
+function contextWindowFor(model, description) {
+  const prose = contextFromProse(description?.zh) || contextFromProse(description?.en);
+  if (prose > 0) return prose;
+  for (const [pattern, size] of CONTEXT_HINTS) if (pattern.test(model)) return size;
+  return DEFAULT_CONTEXT_WINDOW;
+}
+
+/** Per-model output cap, clamped to the advertised context window. */
+function maxTokensFor(contextWindow, description) {
+  const prose = outputFromProse(description?.zh) || outputFromProse(description?.en);
+  if (prose > 0) return Math.min(prose, contextWindow);
+  return Math.min(DEFAULT_MAX_TOKENS, contextWindow);
+}
+
+/** `description` arrives as a JSON string holding `{zh, en}` (or plain prose). */
+function parseDescription(raw) {
+  if (typeof raw !== 'string' || raw.trim() === '') return { zh: '', en: '' };
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed !== null && typeof parsed === 'object') {
+      return {
+        zh: typeof parsed.zh === 'string' ? parsed.zh : '',
+        en: typeof parsed.en === 'string' ? parsed.en : '',
+      };
+    }
+  } catch {
+    /* plain prose descriptions pass through unchanged */
+  }
+  return { zh: raw, en: raw };
+}
+
+function summarize(description) {
+  const text = description.zh !== '' ? description.zh : description.en;
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length <= 160 ? flat : `${flat.slice(0, 157)}…`;
+}
+
+/**
+ * The account's model catalog, joined with public pricing metadata.
+ * Falls back to the pricing rows for the account's group when the per-account
+ * endpoint cannot answer, so a signed-in account always sees its models.
+ */
+async function modelCatalog(session) {
+  if (session === null) return [];
+  if (modelCache.key === session.apiKey && Date.now() - modelCache.at < MODEL_CACHE_MS) {
+    return modelCache.entries;
+  }
+
+  const [pricing, usable] = await Promise.all([
+    fetchPricing(),
+    fetchUsableModels(session).catch(() => null),
+  ]);
+
+  const entries = [];
+  for (const row of pricing.rows) {
+    if (row === null || typeof row !== 'object') continue;
+    const id = typeof row.model_name === 'string' ? row.model_name : '';
+    if (id === '') continue;
+    if (Array.isArray(row.supported_endpoint_types) && !row.supported_endpoint_types.includes('openai')) continue;
+    if (Array.isArray(row.output_modalities) && !row.output_modalities.includes('text')) continue;
+    if (usable === null) {
+      if (session.group !== '' && Array.isArray(row.enable_groups) && !row.enable_groups.includes(session.group)) continue;
+    } else if (!usable.includes(id)) {
+      continue;
+    }
+
+    const description = parseDescription(row.description);
+    const vendor = pricing.vendors.get(row.vendor_id);
+    const contextWindow = contextWindowFor(id, description);
+    entries.push({
+      id,
+      name: id,
+      vendor: vendor === undefined ? '' : vendor.name,
+      description,
+      summary: summarize(description),
+      input: Array.isArray(row.input_modalities) && row.input_modalities.includes('image') ? ['text', 'image'] : ['text'],
+      contextWindow,
+      maxTokens: maxTokensFor(contextWindow, description),
+      quotaType: Number(row.quota_type) === 1 ? 1 : 0,
+      credits: Number(row.credits) > 0 ? Number(row.credits) : 0,
+    });
+  }
+
+  entries.sort((left, right) => left.id.localeCompare(right.id));
+  modelCache = { key: session.apiKey, at: Date.now(), entries };
+  return entries;
+}
+
+const PREFERENCES = ['subscription_first', 'wallet_first', 'subscription_only', 'wallet_only'];
+
+function normalizePreference(value) {
+  return typeof value === 'string' && PREFERENCES.includes(value) ? value : 'subscription_first';
+}
+
+function toCredits(value, rate) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.round(numeric * rate * 10000) / 10000;
+}
+
+function normalizeWindow(view, rate) {
+  if (view === null || typeof view !== 'object') return null;
+  const used = toCredits(view.used, rate);
+  const limit = toCredits(view.limit, rate);
+  const remaining = toCredits(view.remaining, rate);
+  return {
+    used,
+    limit,
+    remaining,
+    percent: limit > 0 ? Math.round((used / limit) * 1000) / 10 : 0,
+    startAt: Number.isFinite(Number(view.period_start)) ? Number(view.period_start) : 0,
+    resetAt: Number.isFinite(Number(view.period_end)) ? Number(view.period_end) : 0,
+  };
+}
+
+function normalizePlan(planBody, rate) {
+  const data = planBody !== null && typeof planBody === 'object' && planBody.data !== null && typeof planBody.data === 'object' ? planBody.data : {};
+  const preference = normalizePreference(data.billing_preference);
+  if (data.has_active_plan !== true || data.plan === null || typeof data.plan !== 'object') {
+    return { active: false, plan: null, usage: null, billingPreference: preference };
+  }
+
+  const plan = data.plan;
+  const usage = data.usage !== null && typeof data.usage === 'object' ? data.usage : {};
+  return {
+    active: true,
+    plan: {
+      id: Number.isInteger(plan.id) ? plan.id : 0,
+      title: typeof plan.title === 'string' ? plan.title : '',
+      subtitle: typeof plan.subtitle === 'string' ? plan.subtitle : '',
+      level: typeof plan.level === 'string' ? plan.level : '',
+      currency: typeof plan.currency === 'string' ? plan.currency : '',
+      price: toCredits(plan.price_amount, 1),
+      credits: toCredits(plan.credits, 1),
+      endTime: Number.isFinite(Number(plan.end_time)) ? Number(plan.end_time) : 0,
+      total: toCredits(plan.total_amount, rate),
+      used: toCredits(plan.amount_used, rate),
+      remaining: toCredits(plan.amount_remaining, rate),
+    },
+    usage: {
+      fiveHour: normalizeWindow(usage.five_hour ?? plan.five_hour_usage, rate),
+      weekly: normalizeWindow(usage.weekly ?? plan.weekly_usage, rate),
+      monthly: normalizeWindow(usage.monthly ?? plan.monthly_usage, rate),
+    },
+    billingPreference: preference,
+  };
+}
+
+async function accountSnapshot(session) {
+  const [selfBody, planBody, status] = await Promise.all([
+    authedJson('/api/user/self', session, '无法读取 EZCloud 账号信息'),
+    authedJson('/api/user/agent/plan', session, '无法读取订阅信息').catch(() => null),
+    fetchStatus().catch(() => null),
+  ]);
+
+  const creditsPerUsd = status === null ? 500 : status.creditsPerUsd;
+  const quotaPerUnit = status === null ? 500000 : status.quotaPerUnit;
+  const rate = creditsPerUsd / quotaPerUnit;
+  const self = selfBody.data !== null && typeof selfBody.data === 'object' ? selfBody.data : {};
+  const planState = normalizePlan(planBody, rate);
+
+  return {
+    account: {
+      username: typeof self.username === 'string' ? self.username : session.username,
+      displayName: typeof self.display_name === 'string' ? self.display_name : session.displayName,
+      group: typeof self.group === 'string' ? self.group : session.group,
+      email: typeof self.email === 'string' ? self.email : '',
+      isEnterprise: self.is_enterprise === true,
+      signedInAt: session.signedInAt,
+    },
+    wallet: {
+      credits: toCredits(self.quota_credits ?? self.quota, 1),
+      usedCredits: toCredits(self.used_quota_credits ?? self.used_quota, 1),
+      requestCount: Number.isFinite(Number(self.request_count)) ? Number(self.request_count) : 0,
+      affiliateCredits: toCredits(self.aff_quota, 1),
+      affiliateCount: Number.isFinite(Number(self.aff_count)) ? Number(self.aff_count) : 0,
+    },
+    subscription: planState,
+    creditsPerUsd,
+    baseUrl: session.baseUrl,
+    fetchedAt: Date.now(),
+  };
+}
+
+//#endregion
+
+//#region LLM provider
+
+function missingSessionError() {
+  return new LlmError('尚未登录 EZCloud，请先在侧边栏登录', 'AUTH');
+}
+
+function flattenText(message) {
+  return message.content
+    .filter((block) => block !== null && typeof block === 'object' && block.type === 'text')
+    .map((block) => block.text)
+    .join('');
+}
+
+function providerError(status, text) {
+  let detail = text.trim();
+  try {
+    const parsed = JSON.parse(text);
+    const error = parsed !== null && typeof parsed === 'object' ? parsed.error : undefined;
+    if (error !== null && typeof error === 'object' && typeof error.message === 'string') detail = error.message;
+    else if (parsed !== null && typeof parsed === 'object' && typeof parsed.message === 'string') detail = parsed.message;
+  } catch {
+    /* non-JSON gateway error */
+  }
+  if (detail === '') detail = `EZCloud 返回 HTTP ${status}`;
+
+  let code = 'TRANSPORT';
+  if (status === 401 || status === 403) code = 'AUTH';
+  else if (status === 402) code = 'QUOTA';
+  else if (status === 429) code = 'RATE_LIMIT';
+  else if (status === 400) code = /context[ _-]?(length|window)/i.test(detail) ? 'CONTEXT_WINDOW_EXCEEDED' : 'INVALID_REQUEST';
+  return new LlmError(detail, code, { cause: new Error(text) });
+}
+
+/** Streaming SSE writer: one DSH block per reasoning/text run and per tool call. */
+class StreamWriter {
+  constructor() {
+    this.blocks = [];
+    this.text = null;
+    this.reasoning = null;
+    this.tools = new Map();
+    this.usage = null;
+    this.finishReason = null;
+  }
+
+  begin(kind, slot) {
+    const block = {
+      index: this.blocks.length,
+      kind,
+      slot: slot === undefined ? -1 : slot,
+      text: '',
+      id: '',
+      name: '',
+      arguments: '',
+    };
+    this.blocks.push(block);
+    return block;
+  }
+
+  *delta(delta) {
+    const reasoning =
+      typeof delta.reasoning_content === 'string'
+        ? delta.reasoning_content
+        : typeof delta.reasoning === 'string'
+          ? delta.reasoning
+          : '';
+    if (reasoning !== '') {
+      if (this.reasoning === null) {
+        this.reasoning = this.begin('reasoning');
+        yield { type: 'block-start', index: this.reasoning.index, blockType: 'reasoning' };
+      }
+      this.reasoning.text += reasoning;
+      yield { type: 'reasoning-delta', index: this.reasoning.index, text: reasoning };
+    }
+
+    const text = typeof delta.content === 'string' ? delta.content : '';
+    if (text !== '') {
+      if (this.text === null) {
+        this.text = this.begin('text');
+        yield { type: 'block-start', index: this.text.index, blockType: 'text' };
+      }
+      this.text.text += text;
+      yield { type: 'text-delta', index: this.text.index, text };
+    }
+
+    const calls = Array.isArray(delta.tool_calls) ? delta.tool_calls : [];
+    for (const call of calls) {
+      if (call === null || typeof call !== 'object') continue;
+      const slot = Number.isInteger(call.index) ? call.index : 0;
+      let block = this.tools.get(slot);
+      if (block === undefined) {
+        block = this.begin('tool-call', slot);
+        this.tools.set(slot, block);
+        yield { type: 'block-start', index: block.index, blockType: 'tool-call' };
+      }
+      if (typeof call.id === 'string' && call.id !== '' && block.id === '') block.id = call.id;
+      const name = call.function !== null && typeof call.function === 'object' ? call.function.name : undefined;
+      if (typeof name === 'string' && name !== '' && block.name === '') block.name = name;
+      const piece =
+        call.function !== null && typeof call.function === 'object' && typeof call.function.arguments === 'string'
+          ? call.function.arguments
+          : '';
+      block.arguments += piece;
+      yield {
+        type: 'tool-call-delta',
+        index: block.index,
+        id: block.id,
+        ...(block.name === '' ? {} : { name: block.name }),
+        argumentsDelta: piece,
+      };
+    }
+  }
+
+  *endBlocks() {
+    for (const block of this.blocks) {
+      if (block.kind === 'text') {
+        yield { type: 'block-end', index: block.index, block: { type: 'text', text: block.text } };
+      } else if (block.kind === 'reasoning') {
+        yield { type: 'block-end', index: block.index, block: { type: 'reasoning', text: block.text } };
+      } else {
+        yield {
+          type: 'block-end',
+          index: block.index,
+          block: { type: 'tool-call', id: block.id, name: block.name, arguments: block.arguments === '' ? '{}' : block.arguments },
+        };
+      }
+    }
+  }
+
+  *finish() {
+    if (this.blocks.length === 0) {
+      yield {
+        type: 'finish',
+        reason: {
+          kind: 'error',
+          failure: { message: 'EZCloud 返回了空响应', code: 'EMPTY_RESPONSE' },
+        },
+      };
+      return;
+    }
+    if (this.usage !== null) yield { type: 'usage', usage: this.usage };
+    let reason;
+    if (this.finishReason === 'length') reason = { kind: 'max-tokens' };
+    else if (this.finishReason === 'tool_calls' || this.tools.size > 0) reason = { kind: 'tool-calls' };
+    else reason = { kind: 'stop' };
+    yield { type: 'finish', reason };
+  }
+}
+
+function parseSseEvent(raw) {
+  const lines = raw.split('\n');
+  const parts = [];
+  for (const line of lines) {
+    if (!line.startsWith('data:')) continue;
+    parts.push(line.slice(5).trimStart());
+  }
+  if (parts.length === 0) return null;
+  const payload = parts.join('\n').trim();
+  return payload === '' ? null : payload;
+}
+
+class EzCloudAdapter extends LlmAdapter {
+  constructor(ctx) {
+    super();
+    this.ctx = ctx;
+  }
+
+  providerInfo(provider) {
+    return { id: provider, name: PROVIDER_NAME };
+  }
+
+  async listModels(provider) {
+    const session = liveSession;
+    if (session === null) return [];
+    try {
+      const entries = await modelCatalog(session);
+      return entries.map((entry) => ({
+        provider,
+        id: entry.id,
+        name: entry.name,
+        ...(entry.summary === '' ? {} : { description: entry.summary }),
+        inputModalities: entry.input,
+      }));
+    } catch {
+      // A catalog read failure must not break the model picker; the account
+      // dialog surfaces the same error with actionable wording.
+      return [];
+    }
+  }
+
+  async resolveModel(provider, model) {
+    const session = liveSession;
+    let entry;
+    if (session !== null) {
+      try {
+        entry = (await modelCatalog(session)).find((item) => item.id === model);
+      } catch {
+        entry = undefined;
+      }
+    }
+    return {
+      provider,
+      id: model,
+      name: entry === undefined ? model : entry.name,
+      ...(entry === undefined || entry.summary === '' ? {} : { description: entry.summary }),
+      ...(entry === undefined ? {} : { inputModalities: entry.input }),
+      context: { contextWindow: entry === undefined ? DEFAULT_CONTEXT_WINDOW : entry.contextWindow },
+      defaultMaxTokens: entry === undefined ? DEFAULT_MAX_TOKENS : entry.maxTokens,
+    };
+  }
+
+  async *stream(options) {
+    const session = liveSession;
+    if (session === null) throw missingSessionError();
+    const signal = options.signal;
+    if (signal !== undefined) signal.throwIfAborted();
+
+    const body = await this.buildRequest(options, signal);
+    let response;
+    try {
+      response = await fetch(`${EZCLOUD_BASE_URL}${CHAT_PATH}`, {
+        method: 'POST',
+        headers: {
+          ...attributionHeaders(),
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+          Authorization: `Bearer ${session.apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal,
+      });
+    } catch (error) {
+      if (signal !== undefined && signal.aborted) throw new LlmError('EZCloud 请求已取消', 'ABORTED', { cause: error });
+      throw new LlmError(
+        `无法连接 EZCloud：${error instanceof Error ? error.message : String(error)}`,
+        'TRANSPORT',
+        { cause: error },
+      );
+    }
+
+    if (!response.ok) throw providerError(response.status, await response.text());
+    if (response.body === null) throw new LlmError('EZCloud 返回了空响应', 'EMPTY_RESPONSE');
+
+    const writer = new StreamWriter();
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let finished = false;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+        let boundary;
+        while ((boundary = buffer.indexOf('\n\n')) !== -1) {
+          const event = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          const payload = parseSseEvent(event);
+          if (payload === null) continue;
+          if (payload === '[DONE]') {
+            finished = true;
+            break;
+          }
+          let parsed;
+          try {
+            parsed = JSON.parse(payload);
+          } catch {
+            continue;
+          }
+          if (parsed === null || typeof parsed !== 'object') continue;
+          if (parsed.error !== null && typeof parsed.error === 'object') {
+            const message = typeof parsed.error.message === 'string' ? parsed.error.message : 'EZCloud 流式响应失败';
+            throw new LlmError(message, /quota|余额|额度/i.test(message) ? 'QUOTA' : 'TRANSPORT');
+          }
+          if (parsed.usage !== null && typeof parsed.usage === 'object') {
+            const usage = parsed.usage;
+            const cacheRead = usage.prompt_tokens_details !== null && typeof usage.prompt_tokens_details === 'object'
+              ? Number(usage.prompt_tokens_details.cached_tokens)
+              : 0;
+            writer.usage = {
+              inputTokens: Number(usage.prompt_tokens) || 0,
+              outputTokens: Number(usage.completion_tokens) || 0,
+              totalTokens: Number(usage.total_tokens) || 0,
+              ...(Number.isFinite(cacheRead) && cacheRead > 0 ? { cacheReadTokens: cacheRead } : {}),
+            };
+          }
+          const choices = Array.isArray(parsed.choices) ? parsed.choices : [];
+          const choice = choices.find((item) => item !== null && typeof item === 'object');
+          if (choice === undefined) continue;
+          if (choice.delta !== null && typeof choice.delta === 'object') {
+            for (const chunk of writer.delta(choice.delta)) yield chunk;
+          }
+          if (typeof choice.finish_reason === 'string' && choice.finish_reason !== '') {
+            writer.finishReason = choice.finish_reason;
+          }
+        }
+        if (finished) break;
+      }
+    } catch (error) {
+      if (error instanceof LlmError) throw error;
+      if (signal !== undefined && signal.aborted) throw new LlmError('EZCloud 请求已取消', 'ABORTED', { cause: error });
+      throw new LlmError('EZCloud 流式响应中断', 'TRANSPORT', { cause: error });
+    } finally {
+      try {
+        await reader.cancel();
+      } catch {
+        /* the stream is already gone */
+      }
+    }
+
+    for (const chunk of writer.endBlocks()) yield chunk;
+    for (const chunk of writer.finish()) yield chunk;
+  }
+
+  async buildRequest(options, signal) {
+    const system = [];
+    if (typeof options.system === 'string' && options.system.trim() !== '') system.push(options.system);
+
+    const messages = [];
+    for (const message of options.messages) {
+      if (message === null || typeof message !== 'object') continue;
+      if (message.role === 'system' || message.role === 'developer') {
+        const text = flattenText(message);
+        if (text !== '') system.push(text);
+        continue;
+      }
+      if (message.role === 'user') {
+        messages.push({ role: 'user', content: await this.userContent(message.content, signal) });
+        continue;
+      }
+      if (message.role === 'assistant') {
+        const assistant = this.assistantMessage(message);
+        if (assistant !== null) messages.push(assistant);
+        continue;
+      }
+      if (message.role === 'tool') {
+        // OpenAI tool messages carry text only; attachments are named instead of
+        // being dropped silently.
+        const dropped = message.content.some(
+          (block) => block !== null && typeof block === 'object' && (block.type === 'image' || block.type === 'file'),
+        );
+        const text = flattenText(message);
+        messages.push({
+          role: 'tool',
+          tool_call_id: typeof message.toolCallId === 'string' ? message.toolCallId : '',
+          content: [text, dropped ? '[附件内容已省略]' : ''].filter((part) => part !== '').join('\n') || '(no output)',
+        });
+      }
+    }
+    if (system.length > 0) messages.unshift({ role: 'system', content: system.join('\n\n') });
+
+    const body = {
+      model: options.model,
+      messages,
+      stream: true,
+      stream_options: { include_usage: true },
+    };
+    if (Number.isSafeInteger(options.maxTokens) && options.maxTokens > 0) body.max_tokens = options.maxTokens;
+    if (typeof options.temperature === 'number') body.temperature = options.temperature;
+    if (Array.isArray(options.stop) && options.stop.length > 0) body.stop = options.stop;
+    if (Array.isArray(options.tools) && options.tools.length > 0) {
+      body.tools = options.tools
+        .filter((tool) => tool !== null && typeof tool === 'object' && typeof tool.name === 'string' && tool.name !== '')
+        .map((tool) => ({
+          type: 'function',
+          function: {
+            name: tool.name,
+            description: typeof tool.description === 'string' ? tool.description : '',
+            parameters: tool.parameters !== null && typeof tool.parameters === 'object' ? tool.parameters : { type: 'object', properties: {} },
+          },
+        }));
+    }
+    return body;
+  }
+
+  async userContent(blocks, signal) {
+    const parts = [];
+    for (const block of blocks) {
+      if (block === null || typeof block !== 'object') continue;
+      if (block.type === 'text' && typeof block.text === 'string' && block.text !== '') {
+        parts.push({ type: 'text', text: block.text });
+      } else if (block.type === 'image') {
+        const image = await this.imagePart(block, signal);
+        parts.push(image === null ? { type: 'text', text: '[图片已省略]' } : image);
+      }
+    }
+    if (parts.every((part) => part.type === 'text')) return parts.map((part) => part.text).join('');
+    return parts;
+  }
+
+  async imagePart(block, signal) {
+    const attachments = typeof this.ctx.get === 'function' ? this.ctx.get('attachments') : undefined;
+    if (attachments === undefined || attachments === null || typeof attachments.readImageRequest !== 'function') return null;
+    try {
+      const version = await attachments.readImageRequest(
+        block.attachment,
+        { maxPixels: IMAGE_PIXEL_BUDGET, maxBytes: IMAGE_BYTE_BUDGET },
+        signal,
+      );
+      const data = Buffer.from(version.data).toString('base64');
+      return { type: 'image_url', image_url: { url: `data:${version.mediaType};base64,${data}` } };
+    } catch {
+      return null;
+    }
+  }
+
+  assistantMessage(message) {
+    const texts = [];
+    const toolCalls = [];
+    for (const block of message.content) {
+      if (block === null || typeof block !== 'object') continue;
+      if (block.type === 'text') texts.push(block.text);
+      else if (block.type === 'tool-call') {
+        toolCalls.push({
+          id: block.id,
+          type: 'function',
+          function: {
+            name: block.name,
+            arguments: typeof block.arguments === 'string' ? block.arguments : JSON.stringify(block.arguments ?? {}),
+          },
+        });
+      }
+    }
+    if (texts.length === 0 && toolCalls.length === 0) return null;
+    return {
+      role: 'assistant',
+      content: texts.join(''),
+      ...(toolCalls.length === 0 ? {} : { tool_calls: toolCalls }),
+    };
+  }
+}
+
+//#endregion
+
 /**
  * Cross-origin guard. The connection service knows which origins may drive the
  * host; without it the routes stay reachable for same-origin page code only,
@@ -195,9 +1024,20 @@ function isForeignRequest(ctx, request) {
 }
 
 export const name = 'ezagent-host';
-export const inject = ['webServer'];
+export const inject = ['webServer', 'llm'];
 
 export function apply(ctx) {
+  const adapter = new EzCloudAdapter(ctx);
+  ctx.llm.registerAdapter([{ id: PROVIDER_ID, name: PROVIDER_NAME }], adapter);
+
+  const announce = () => {
+    try {
+      ctx.llm.emitAdaptersUpdated();
+    } catch {
+      /* observers are best-effort */
+    }
+  };
+
   ctx.effect(
     () =>
       ctx.webServer.register({
@@ -216,14 +1056,81 @@ export function apply(ctx) {
           const pathname = new URL(request.url ?? '/', 'http://dsh.internal').pathname;
           try {
             const payload = await readJsonBody(request);
+
             if (pathname === `${ROUTE_PREFIX}/sign-in`) {
-              sendJson(response, 200, { ok: true, session: await signIn(payload) });
+              const session = await signIn(payload);
+              adoptSession(normalizeSession(session));
+              announce();
+              sendJson(response, 200, { ok: true, session });
               return;
             }
+
             if (pathname === `${ROUTE_PREFIX}/sign-out`) {
-              sendJson(response, 200, { ok: true, result: await signOut(payload) });
+              const result = await signOut(payload);
+              clearSession();
+              announce();
+              sendJson(response, 200, { ok: true, result });
               return;
             }
+
+            // The page announces its stored session on every load so the host
+            // (which keeps it in memory only) can serve model requests again
+            // after an app restart.
+            if (pathname === `${ROUTE_PREFIX}/sync`) {
+              const session = normalizeSession(payload.session);
+              if (session === null) {
+                clearSession();
+                sendJson(response, 200, { ok: true, signedIn: false });
+              } else {
+                adoptSession(session);
+                announce();
+                sendJson(response, 200, { ok: true, signedIn: true });
+              }
+              return;
+            }
+
+            if (pathname === `${ROUTE_PREFIX}/account`) {
+              const session = sessionOf(payload);
+              if (session === null) throw new Error('尚未登录 EZCloud');
+              sendJson(response, 200, { ok: true, snapshot: await accountSnapshot(session) });
+              return;
+            }
+
+            if (pathname === `${ROUTE_PREFIX}/models`) {
+              const session = sessionOf(payload);
+              if (session === null) throw new Error('尚未登录 EZCloud');
+              if (payload.refresh === true) modelCache = { key: '', at: 0, entries: [] };
+              const entries = await modelCatalog(session);
+              sendJson(response, 200, {
+                ok: true,
+                models: entries.map((entry) => ({
+                  id: entry.id,
+                  name: entry.name,
+                  vendor: entry.vendor,
+                  description: entry.description,
+                  input: entry.input,
+                  contextWindow: entry.contextWindow,
+                  quotaType: entry.quotaType,
+                  credits: entry.credits,
+                })),
+                fetchedAt: Date.now(),
+              });
+              return;
+            }
+
+            if (pathname === `${ROUTE_PREFIX}/billing-preference`) {
+              const session = sessionOf(payload);
+              if (session === null) throw new Error('尚未登录 EZCloud');
+              const preference = normalizePreference(payload.preference);
+              await authedJson('/api/subscription/self/preference', session, '无法保存计费方式', {
+                method: 'PUT',
+                headers: { ...bearer(session.deviceKey || session.accessToken), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ billing_preference: preference }),
+              });
+              sendJson(response, 200, { ok: true, preference });
+              return;
+            }
+
             sendJson(response, 404, { ok: false, error: { code: 'not-found', message: 'unknown route' } });
           } catch (error) {
             const message = error instanceof Error && error.message !== '' ? error.message : 'EZCloud 请求失败';
@@ -235,4 +1142,4 @@ export function apply(ctx) {
   );
 }
 
-export const testing = { signIn, signOut, ROUTE_PREFIX };
+export const testing = { signIn, signOut, ROUTE_PREFIX, PROVIDER_ID, normalizeSession, normalizePlan };

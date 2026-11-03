@@ -79,17 +79,52 @@ window.__ModuleLoader__.load({
       close: '关闭',
       done: '完成',
       signOut: '退出登录',
-      copying: '复制',
+      copy: '复制',
       copied: '已复制',
       displayName: '显示名称',
+      group: '用户分组',
       apiKey: 'API Key',
+      keyHint: 'DSH 通过该密钥调用 EZCloud，密钥仅保存在本机。',
       errorAccount: '请输入账号',
       errorPassword: '请输入密码',
       errorLogin: '登录失败，请检查账号与密码',
       errorBridge: '无法连接 EZCloud 服务，请检查本机网络',
       errorKey: '无法获取 EZCloud 密钥',
+      errorLoad: '无法读取账号信息',
+      errorModels: '无法读取模型列表',
+      errorBilling: '无法保存计费方式',
       signedTitle: 'EZCloud 账号',
-      signedDescription: '已连接 EZCloud，密钥保存在本机。',
+      signedDescription: '账号、钱包与订阅信息来自 EZCloud 实时接口。',
+      loading: '加载中…',
+      refresh: '刷新',
+      walletTitle: '钱包余额',
+      balance: '可用余额',
+      used: '已消费',
+      requests: '请求次数',
+      affiliate: '邀请奖励',
+      recharge: '充值 / 明细',
+      subscriptionTitle: '订阅',
+      planManage: '购买 / 管理套餐',
+      notSubscribed: '当前账号未订阅套餐，将按钱包余额计费。',
+      subscribed: '已订阅',
+      validUntil: '有效期至',
+      planRemaining: '套餐剩余',
+      windowFiveHour: '5 小时窗口',
+      windowWeekly: '本周',
+      windowMonthly: '本月',
+      resetsAt: '重置于',
+      billingTitle: '计费方式',
+      billingHint: '订阅与钱包余额同时可用时的扣费顺序。',
+      prefSubscriptionFirst: '订阅优先',
+      prefWalletFirst: '钱包优先',
+      prefSubscriptionOnly: '仅订阅',
+      prefWalletOnly: '仅钱包',
+      modelsTitle: '可用模型',
+      modelsCount: '共 {n} 个模型，已同步到 DSH 模型选择器。',
+      modelsEmpty: '当前账号没有可用的 EZCloud 模型。',
+      modelsLoading: '读取模型…',
+      modelContext: '{n} 上下文',
+      modelImage: '支持图片',
     };
 
     const EN = {
@@ -107,18 +142,55 @@ window.__ModuleLoader__.load({
       close: 'Close',
       done: 'Done',
       signOut: 'Sign out',
-      copying: 'Copy',
+      copy: 'Copy',
       copied: 'Copied',
       displayName: 'Display name',
+      group: 'Group',
       apiKey: 'API Key',
+      keyHint: 'DSH calls EZCloud with this key. It stays on this machine.',
       errorAccount: 'Enter your account',
       errorPassword: 'Enter your password',
       errorLogin: 'Sign-in failed. Check your account and password.',
       errorBridge: 'Could not reach the EZCloud service. Check this machine\'s network.',
       errorKey: 'Could not obtain an EZCloud key',
+      errorLoad: 'Could not read account details',
+      errorModels: 'Could not read the model list',
+      errorBilling: 'Could not save the billing mode',
       signedTitle: 'EZCloud account',
-      signedDescription: 'Connected to EZCloud. The key is stored on this machine.',
+      signedDescription: 'Account, wallet, and subscription details come from the live EZCloud API.',
+      loading: 'Loading…',
+      refresh: 'Refresh',
+      walletTitle: 'Wallet',
+      balance: 'Balance',
+      used: 'Spent',
+      requests: 'Requests',
+      affiliate: 'Invite rewards',
+      recharge: 'Top up / details',
+      subscriptionTitle: 'Subscription',
+      planManage: 'Buy / manage plan',
+      notSubscribed: 'No active plan on this account; usage is billed from the wallet balance.',
+      subscribed: 'Subscribed',
+      validUntil: 'Valid until',
+      planRemaining: 'Plan remaining',
+      windowFiveHour: '5-hour window',
+      windowWeekly: 'This week',
+      windowMonthly: 'This month',
+      resetsAt: 'Resets',
+      billingTitle: 'Billing mode',
+      billingHint: 'Which balance is charged first when a plan and the wallet are both available.',
+      prefSubscriptionFirst: 'Plan first',
+      prefWalletFirst: 'Wallet first',
+      prefSubscriptionOnly: 'Plan only',
+      prefWalletOnly: 'Wallet only',
+      modelsTitle: 'Models',
+      modelsCount: '{n} models, synced to the DSH model picker.',
+      modelsEmpty: 'This account has no EZCloud models available.',
+      modelsLoading: 'Reading models…',
+      modelContext: '{n} context',
+      modelImage: 'image input',
     };
+
+    const PREFERENCES = ['subscription_first', 'wallet_first', 'subscription_only', 'wallet_only'];
 
     function texts() {
       let language = '';
@@ -247,9 +319,91 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /** Tell the host which account is live so it can serve the model picker. */
+    async function syncHost(session) {
+      try {
+        await postHost('sync', { session });
+      } catch {
+        /* the host re-syncs on the next page load */
+      }
+    }
+
+    async function loadSnapshot(session) {
+      const body = await postHost('account', { session });
+      const snapshot = body.snapshot;
+      if (snapshot === null || typeof snapshot !== 'object') throw new Error(texts().errorLoad);
+      return snapshot;
+    }
+
+    async function loadModels(session, refresh) {
+      const body = await postHost('models', refresh === true ? { session, refresh: true } : { session });
+      return Array.isArray(body.models) ? body.models : [];
+    }
+
+    async function savePreference(session, preference) {
+      await postHost('billing-preference', { session, preference });
+      return preference;
+    }
+
     function maskKey(key) {
       if (typeof key !== 'string' || key.length <= 10) return '••••••••';
       return `${key.slice(0, 6)}••••••${key.slice(-4)}`;
+    }
+
+    function formatCredits(value) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric) || numeric <= 0) return '0';
+      if (numeric >= 100) return numeric.toFixed(0);
+      if (numeric >= 10) return numeric.toFixed(1);
+      if (numeric >= 1) return numeric.toFixed(2);
+      return numeric.toFixed(3);
+    }
+
+    function formatCount(value) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric) || numeric <= 0) return '0';
+      return new Intl.NumberFormat().format(Math.round(numeric));
+    }
+
+    function formatDate(seconds) {
+      const numeric = Number(seconds);
+      if (!Number.isFinite(numeric) || numeric <= 0) return '—';
+      return new Date(numeric * 1000).toLocaleDateString(undefined, {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      });
+    }
+
+    function formatDateTime(seconds) {
+      const numeric = Number(seconds);
+      if (!Number.isFinite(numeric) || numeric <= 0) return '—';
+      return new Date(numeric * 1000).toLocaleString(undefined, {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    }
+
+    function formatTokens(value) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric) || numeric <= 0) return '';
+      if (numeric >= 1000000) return `${Math.round(numeric / 100000) / 10}M`;
+      if (numeric >= 1024) return `${Math.round(numeric / 1024)}K`;
+      return String(Math.round(numeric));
+    }
+
+    function descriptionOf(model) {
+      const description = model.description;
+      if (description === null || typeof description !== 'object') return '';
+      if (typeof description.zh === 'string' && description.zh !== '') return description.zh;
+      return typeof description.en === 'string' ? description.en : '';
+    }
+
+    function initialOf(label) {
+      const text = String(label === undefined || label === null ? '' : label).trim();
+      return text === '' ? 'E' : text.slice(0, 1).toUpperCase();
     }
     //#endregion
 
@@ -274,6 +428,40 @@ window.__ModuleLoader__.load({
 .ezagent-row-value{display:inline-flex;align-items:center;gap:8px;min-width:0;}
 .ezagent-row-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .ezagent-key{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;letter-spacing:.02em;}
+.ezagent-dialog{display:flex;flex-direction:column;gap:14px;max-height:min(62vh,560px);overflow:auto;padding-right:4px;}
+.ezagent-card{display:flex;flex-direction:column;gap:10px;padding:12px 14px;border:1px solid color-mix(in srgb,currentColor 12%,transparent);border-radius:12px;}
+.ezagent-card-head{display:flex;align-items:center;justify-content:space-between;gap:12px;}
+.ezagent-card-title{margin:0;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:color-mix(in srgb,currentColor 55%,transparent);}
+.ezagent-balance{display:flex;align-items:baseline;gap:6px;}
+.ezagent-balance-value{font-size:28px;font-weight:600;line-height:1.1;letter-spacing:-.01em;}
+.ezagent-balance-unit{font-size:13px;color:color-mix(in srgb,currentColor 55%,transparent);}
+.ezagent-stats{display:flex;flex-wrap:wrap;gap:18px;}
+.ezagent-stat{display:flex;flex-direction:column;gap:2px;}
+.ezagent-stat-label{font-size:11px;color:color-mix(in srgb,currentColor 55%,transparent);}
+.ezagent-stat-value{font-size:13px;font-weight:500;}
+.ezagent-muted{margin:0;font-size:12px;line-height:18px;color:color-mix(in srgb,currentColor 55%,transparent);}
+.ezagent-plan-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px;}
+.ezagent-plan-title{font-size:15px;font-weight:600;}
+.ezagent-badge{display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:6px;background:color-mix(in srgb,#4d6bfe 18%,transparent);color:#4d6bfe;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;}
+.ezagent-badge[data-tone="muted"]{background:color-mix(in srgb,currentColor 10%,transparent);color:color-mix(in srgb,currentColor 60%,transparent);}
+.ezagent-usage{display:flex;flex-direction:column;gap:5px;}
+.ezagent-usage-head{display:flex;justify-content:space-between;gap:12px;font-size:12px;}
+.ezagent-usage-foot{font-size:11px;color:color-mix(in srgb,currentColor 45%,transparent);}
+.ezagent-bar{height:6px;overflow:hidden;border-radius:999px;background:color-mix(in srgb,currentColor 10%,transparent);}
+.ezagent-bar-fill{height:100%;border-radius:999px;background:#4d6bfe;transition:width .2s ease;}
+.ezagent-chips{display:flex;flex-wrap:wrap;gap:6px;}
+.ezagent-models{display:flex;flex-direction:column;max-height:190px;overflow:auto;}
+.ezagent-model{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid color-mix(in srgb,currentColor 7%,transparent);}
+.ezagent-model:last-child{border-bottom:0;}
+.ezagent-model-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;}
+.ezagent-model-meta{flex:none;font-size:11px;color:color-mix(in srgb,currentColor 50%,transparent);}
+.ezagent-link{color:#4d6bfe;font-size:12px;text-decoration:none;}
+.ezagent-link:hover{text-decoration:underline;}
+.ezagent-identity{display:flex;align-items:center;gap:10px;}
+.ezagent-identity .ezagent-avatar{width:32px;height:32px;font-size:14px;}
+.ezagent-identity-name{display:flex;flex-direction:column;gap:1px;min-width:0;}
+.ezagent-identity-name strong{font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.ezagent-identity-name span{font-size:11px;color:color-mix(in srgb,currentColor 55%,transparent);}
 `;
 
     function ensureStyles() {
@@ -286,7 +474,7 @@ window.__ModuleLoader__.load({
     }
     //#endregion
 
-    //#region components
+    //#region shared components
     function Field(props) {
       return h(
         'label',
@@ -315,19 +503,57 @@ window.__ModuleLoader__.load({
       );
     }
 
-    function initialOf(label) {
-      const text = String(label === undefined || label === null ? '' : label).trim();
-      return text === '' ? 'E' : text.slice(0, 1).toUpperCase();
+    function Card(props) {
+      return h(
+        'section',
+        { className: 'ezagent-card' },
+        h(
+          'div',
+          { className: 'ezagent-card-head' },
+          h('h3', { className: 'ezagent-card-title' }, props.title),
+          props.extra === undefined ? null : props.extra,
+        ),
+        props.children,
+      );
     }
 
-    function LoginDialog(props) {
+    function Stat(props) {
+      return h(
+        'div',
+        { className: 'ezagent-stat' },
+        h('span', { className: 'ezagent-stat-label' }, props.label),
+        h('span', { className: 'ezagent-stat-value' }, props.value),
+      );
+    }
+
+    function UsageBar(props) {
       const t = texts();
-      const session = props.session;
+      const window = props.window;
+      const percent = Math.max(0, Math.min(100, Number(window.percent) || 0));
+      return h(
+        'div',
+        { className: 'ezagent-usage' },
+        h(
+          'div',
+          { className: 'ezagent-usage-head' },
+          h('span', null, props.label),
+          h('span', { className: 'ezagent-muted' }, `${formatCredits(window.used)} / ${formatCredits(window.limit)} E`),
+        ),
+        h('div', { className: 'ezagent-bar' }, h('div', { className: 'ezagent-bar-fill', style: { width: `${percent}%` } })),
+        window.resetAt > 0
+          ? h('div', { className: 'ezagent-usage-foot' }, `${t.resetsAt} ${formatDateTime(window.resetAt)}`)
+          : null,
+      );
+    }
+    //#endregion
+
+    //#region sign-in dialog
+    function SignInDialog(props) {
+      const t = texts();
       const [account, setAccount] = React.useState('');
       const [password, setPassword] = React.useState('');
       const [error, setError] = React.useState('');
       const [pending, setPending] = React.useState(false);
-      const [copied, setCopied] = React.useState(false);
 
       React.useEffect(() => {
         if (props.open) return;
@@ -335,14 +561,7 @@ window.__ModuleLoader__.load({
         setPassword('');
         setError('');
         setPending(false);
-        setCopied(false);
       }, [props.open]);
-
-      React.useEffect(() => {
-        if (!copied) return;
-        const timer = window.setTimeout(() => setCopied(false), 1500);
-        return () => window.clearTimeout(timer);
-      }, [copied]);
 
       const submit = async (event) => {
         if (event !== undefined && typeof event.preventDefault === 'function') event.preventDefault();
@@ -360,104 +579,337 @@ window.__ModuleLoader__.load({
         }
       };
 
-      const copyKey = async () => {
-        if (session === null) return;
-        const done = await writeClipboard(session.apiKey);
-        if (done) setCopied(true);
-      };
+      return h(Modal, {
+        open: props.open,
+        title: t.modalTitle,
+        description: t.modalDescription,
+        closeLabel: t.close,
+        onClose: pending ? () => {} : props.onClose,
+        footer: h(
+          React.Fragment,
+          null,
+          h(Button, { key: 'cancel', variant: 'outline', disabled: pending, onClick: props.onClose }, t.cancel),
+          h(Button, { key: 'submit', variant: 'primary', disabled: pending, onClick: submit }, pending ? t.submitting : t.submit),
+        ),
+        children: h(
+          'form',
+          { className: 'ezagent-form', onSubmit: submit },
+          h(Field, {
+            key: 'account',
+            label: t.account,
+            placeholder: t.accountPlaceholder,
+            autoComplete: 'username',
+            value: account,
+            disabled: pending,
+            onChange: setAccount,
+          }),
+          h(Field, {
+            key: 'password',
+            label: t.password,
+            type: 'password',
+            autoComplete: 'current-password',
+            value: password,
+            disabled: pending,
+            onChange: setPassword,
+          }),
+          error === '' ? null : h('p', { key: 'error', className: 'ezagent-error', role: 'alert' }, error),
+          h('button', { key: 'submit-helper', type: 'submit', hidden: true, tabIndex: -1, 'aria-hidden': 'true' }),
+        ),
+      });
+    }
+    //#endregion
 
-      const handleSignOut = async () => {
-        if (pending) return;
-        setPending(true);
-        const current = session;
-        props.onSessionChange(null);
+    //#region account dialog
+    function AccountDialog(props) {
+      const t = texts();
+      const session = props.session;
+      const [snapshot, setSnapshot] = React.useState(null);
+      const [models, setModels] = React.useState(null);
+      const [loading, setLoading] = React.useState(false);
+      const [modelsLoading, setModelsLoading] = React.useState(false);
+      const [error, setError] = React.useState('');
+      const [modelsError, setModelsError] = React.useState('');
+      const [copied, setCopied] = React.useState(false);
+      const [pending, setPending] = React.useState('');
+      const [preference, setPreference] = React.useState('');
+
+      const readAccount = React.useRef(null);
+      readAccount.current = async () => {
+        setLoading(true);
+        setError('');
         try {
-          await signOut(current);
+          const next = await loadSnapshot(session);
+          setSnapshot(next);
+          const subscription = next.subscription === null || typeof next.subscription !== 'object' ? null : next.subscription;
+          setPreference(subscription === null ? '' : subscription.billingPreference);
+        } catch (failure) {
+          setError(failure instanceof Error && failure.message !== '' ? failure.message : t.errorLoad);
         } finally {
-          setPending(false);
-          setError('');
+          setLoading(false);
         }
       };
 
-      if (session === null) {
-        return h(
-          Modal,
-          {
-            open: props.open,
-            title: t.modalTitle,
-            description: t.modalDescription,
-            closeLabel: t.close,
-            onClose: pending ? () => {} : props.onClose,
-            footer: h(
-              React.Fragment,
+      const readModels = React.useRef(null);
+      readModels.current = async (refresh) => {
+        setModelsLoading(true);
+        setModelsError('');
+        try {
+          setModels(await loadModels(session, refresh === true));
+        } catch (failure) {
+          setModelsError(failure instanceof Error && failure.message !== '' ? failure.message : t.errorModels);
+        } finally {
+          setModelsLoading(false);
+        }
+      };
+
+      React.useEffect(() => {
+        if (!props.open) return;
+        readAccount.current();
+        readModels.current(false);
+      }, [props.open, session.apiKey]);
+
+      React.useEffect(() => {
+        if (!copied) return;
+        const timer = window.setTimeout(() => setCopied(false), 1500);
+        return () => window.clearTimeout(timer);
+      }, [copied]);
+
+      const copyKey = async () => {
+        try {
+          const done = await writeClipboard(session.apiKey);
+          if (done) setCopied(true);
+        } catch {
+          /* clipboard permission missing: nothing to report */
+        }
+      };
+
+      const handleSignOut = async () => {
+        if (pending !== '') return;
+        setPending('sign-out');
+        const current = session;
+        try {
+          await signOut(current);
+        } finally {
+          setPending('');
+          props.onSessionChange(null);
+        }
+      };
+
+      const changePreference = async (value) => {
+        if (pending !== '' || value === preference) return;
+        setPending('billing');
+        setError('');
+        try {
+          setPreference(await savePreference(session, value));
+        } catch (failure) {
+          setError(failure instanceof Error && failure.message !== '' ? failure.message : t.errorBilling);
+        } finally {
+          setPending('');
+        }
+      };
+
+      const wallet = snapshot === null ? null : snapshot.wallet;
+      const subscription = snapshot === null ? null : snapshot.subscription;
+      const plan = subscription !== null && typeof subscription === 'object' && subscription.active === true ? subscription.plan : null;
+      const usage = subscription !== null && typeof subscription === 'object' && subscription.active === true ? subscription.usage : null;
+      const account = snapshot === null ? null : snapshot.account;
+      const walletUrl = snapshot !== null && typeof snapshot.baseUrl === 'string' ? `${snapshot.baseUrl}/wallet` : `${EZCLOUD_BASE_URL}/wallet`;
+      const planUrl = snapshot !== null && typeof snapshot.baseUrl === 'string' ? `${snapshot.baseUrl}/subscription` : `${EZCLOUD_BASE_URL}/subscription`;
+      const label = session.displayName !== '' ? session.displayName : session.username;
+
+      const preferenceLabels = {
+        subscription_first: t.prefSubscriptionFirst,
+        wallet_first: t.prefWalletFirst,
+        subscription_only: t.prefSubscriptionOnly,
+        wallet_only: t.prefWalletOnly,
+      };
+
+      const body = h(
+        'div',
+        { className: 'ezagent-dialog' },
+        h(
+          'div',
+          { className: 'ezagent-identity', key: 'identity' },
+          h('span', { className: 'ezagent-avatar', 'aria-hidden': 'true' }, initialOf(label)),
+          h(
+            'div',
+            { className: 'ezagent-identity-name' },
+            h('strong', null, label),
+            h(
+              'span',
               null,
-              h(Button, { key: 'cancel', variant: 'outline', disabled: pending, onClick: props.onClose }, t.cancel),
-              h(Button, { key: 'submit', variant: 'primary', disabled: pending, onClick: submit }, pending ? t.submitting : t.submit),
+              [account !== null && account.group !== '' ? account.group : session.group, session.username]
+                .filter((part) => typeof part === 'string' && part !== '')
+                .join(' · '),
             ),
-            children: h(
-              'form',
-              { className: 'ezagent-form', onSubmit: submit },
-              h(Field, {
-                key: 'account',
-                label: t.account,
-                placeholder: t.accountPlaceholder,
-                autoComplete: 'username',
-                value: account,
-                disabled: pending,
-                onChange: setAccount,
-              }),
-              h(Field, {
-                key: 'password',
-                label: t.password,
-                type: 'password',
-                autoComplete: 'current-password',
-                value: password,
-                disabled: pending,
-                onChange: setPassword,
-              }),
-              error === '' ? null : h('p', { key: 'error', className: 'ezagent-error', role: 'alert' }, error),
-              h('button', { key: 'submit-helper', type: 'submit', hidden: true, tabIndex: -1, 'aria-hidden': 'true' }),
+          ),
+        ),
+
+        error === '' ? null : h('p', { key: 'error', className: 'ezagent-error', role: 'alert' }, error),
+
+        wallet === null
+          ? null
+          : h(
+              Card,
+              {
+                key: 'wallet',
+                title: t.walletTitle,
+                extra: h('a', { className: 'ezagent-link', href: walletUrl, target: '_blank', rel: 'noreferrer' }, t.recharge),
+              },
+              h(
+                'div',
+                { className: 'ezagent-balance' },
+                h('span', { className: 'ezagent-balance-value' }, loading && snapshot === null ? '—' : formatCredits(wallet.credits)),
+                h('span', { className: 'ezagent-balance-unit' }, 'E'),
+              ),
+              h(
+                'div',
+                { className: 'ezagent-stats' },
+                h(Stat, { key: 'used', label: t.used, value: `${formatCredits(wallet.usedCredits)} E` }),
+                h(Stat, { key: 'requests', label: t.requests, value: formatCount(wallet.requestCount) }),
+                wallet.affiliateCredits > 0
+                  ? h(Stat, {
+                      key: 'affiliate',
+                      label: t.affiliate,
+                      value: `${formatCredits(wallet.affiliateCredits)} E · ${formatCount(wallet.affiliateCount)}`,
+                    })
+                  : null,
+              ),
+            ),
+
+        h(
+          Card,
+          { key: 'subscription', title: t.subscriptionTitle, extra: h('a', { className: 'ezagent-link', href: planUrl, target: '_blank', rel: 'noreferrer' }, t.planManage) },
+          subscription === null
+            ? h('p', { className: 'ezagent-muted' }, loading ? t.loading : t.errorLoad)
+            : plan === null
+              ? h('p', { className: 'ezagent-muted' }, t.notSubscribed)
+              : h(
+                  React.Fragment,
+                  null,
+                  h(
+                    'div',
+                    { className: 'ezagent-plan-head' },
+                    h('span', { className: 'ezagent-plan-title' }, plan.title === '' ? t.subscribed : plan.title),
+                    plan.level === '' ? null : h('span', { className: 'ezagent-badge' }, plan.level),
+                    plan.endTime > 0
+                      ? h('span', { className: 'ezagent-badge', 'data-tone': 'muted' }, `${t.validUntil} ${formatDate(plan.endTime)}`)
+                      : null,
+                  ),
+                  plan.subtitle === '' ? null : h('p', { className: 'ezagent-muted' }, plan.subtitle),
+                  h(
+                    'div',
+                    { className: 'ezagent-stats' },
+                    h(Stat, { key: 'remaining', label: t.planRemaining, value: `${formatCredits(plan.remaining)} / ${formatCredits(plan.total)} E` }),
+                  ),
+                  usage === null
+                    ? null
+                    : h(
+                        React.Fragment,
+                        null,
+                        usage.fiveHour === null ? null : h(UsageBar, { key: 'five', label: t.windowFiveHour, window: usage.fiveHour }),
+                        usage.weekly === null ? null : h(UsageBar, { key: 'week', label: t.windowWeekly, window: usage.weekly }),
+                        usage.monthly === null ? null : h(UsageBar, { key: 'month', label: t.windowMonthly, window: usage.monthly }),
+                      ),
+                ),
+        ),
+
+        snapshot === null
+          ? null
+          : h(
+              Card,
+              { key: 'billing', title: t.billingTitle },
+              h('p', { className: 'ezagent-muted' }, t.billingHint),
+              h(
+                'div',
+                { className: 'ezagent-chips' },
+                PREFERENCES.map((value) =>
+                  h(
+                    Button,
+                    {
+                      key: value,
+                      variant: value === preference ? 'primary' : 'outline',
+                      size: 'sm',
+                      disabled: pending !== '',
+                      onClick: () => changePreference(value),
+                    },
+                    preferenceLabels[value],
+                  ),
+                ),
+              ),
+            ),
+
+        h(
+          Card,
+          {
+            key: 'models',
+            title: t.modelsTitle,
+            extra: h(
+              Button,
+              { variant: 'ghost', size: 'sm', disabled: modelsLoading, onClick: () => readModels.current(true) },
+              modelsLoading ? t.loading : t.refresh,
             ),
           },
-        );
-      }
+          modelsError !== ''
+            ? h('p', { className: 'ezagent-error' }, modelsError)
+            : models === null
+              ? h('p', { className: 'ezagent-muted' }, t.modelsLoading)
+              : models.length === 0
+                ? h('p', { className: 'ezagent-muted' }, t.modelsEmpty)
+                : h(
+                    React.Fragment,
+                    null,
+                    h('p', { className: 'ezagent-muted' }, t.modelsCount.replace('{n}', String(models.length))),
+                    h(
+                      'div',
+                      { className: 'ezagent-models' },
+                      models.map((model) => {
+                        const description = descriptionOf(model);
+                        const meta = [
+                          model.vendor === '' ? '' : model.vendor,
+                          formatTokens(model.contextWindow) === '' ? '' : t.modelContext.replace('{n}', formatTokens(model.contextWindow)),
+                          Array.isArray(model.input) && model.input.includes('image') ? t.modelImage : '',
+                        ]
+                          .filter((part) => part !== '')
+                          .join(' · ');
+                        return h(
+                          'div',
+                          { className: 'ezagent-model', key: model.id, title: description.slice(0, 400) },
+                          h('code', { className: 'ezagent-model-name' }, model.id),
+                          h('span', { className: 'ezagent-model-meta' }, meta),
+                        );
+                      }),
+                    ),
+                  ),
+        ),
 
-      return h(
-        Modal,
-        {
-          open: props.open,
-          title: t.signedTitle,
-          description: t.signedDescription,
-          closeLabel: t.close,
-          onClose: props.onClose,
-          footer: h(
-            React.Fragment,
-            null,
-            h(Button, { key: 'signout', variant: 'outline', disabled: pending, onClick: handleSignOut }, t.signOut),
-            h(Button, { key: 'done', variant: 'primary', onClick: props.onClose }, t.done),
-          ),
-          children: h(
-            'div',
-            { className: 'ezagent-rows' },
-            h(Row, { key: 'account', label: t.account }, h('span', { className: 'ezagent-row-text' }, session.username)),
-            session.displayName === ''
-              ? null
-              : h(
-                  Row,
-                  { key: 'display', label: t.displayName },
-                  h('span', { className: 'ezagent-row-text' }, session.displayName),
-                ),
-            h(
-              Row,
-              { key: 'key', label: t.apiKey },
-              h('code', { className: 'ezagent-key' }, maskKey(session.apiKey)),
-              h(Button, { variant: 'ghost', size: 'sm', disabled: pending, onClick: copyKey }, copied ? t.copied : t.copying),
-            ),
-          ),
-        },
+        h(
+          Row,
+          { key: 'key', label: t.apiKey },
+          h('code', { className: 'ezagent-key' }, maskKey(session.apiKey)),
+          h(Button, { variant: 'ghost', size: 'sm', disabled: pending !== '', onClick: copyKey }, copied ? t.copied : t.copy),
+        ),
+        h('p', { key: 'key-hint', className: 'ezagent-muted' }, t.keyHint),
       );
-    }
 
+      return h(Modal, {
+        open: props.open,
+        title: t.signedTitle,
+        description: t.signedDescription,
+        closeLabel: t.close,
+        onClose: props.onClose,
+        footer: h(
+          React.Fragment,
+          null,
+          h(Button, { key: 'signout', variant: 'outline', disabled: pending !== '', onClick: handleSignOut }, t.signOut),
+          h(Button, { key: 'done', variant: 'primary', onClick: props.onClose }, t.done),
+        ),
+        children: body,
+      });
+    }
+    //#endregion
+
+    //#region sidebar entry
     function LoginEntry(props) {
       const t = texts();
       const wide = props.wide !== false;
@@ -466,7 +918,21 @@ window.__ModuleLoader__.load({
 
       React.useEffect(() => ensureStyles(), []);
 
+      // A page reload keeps the stored session, but the host keeps its copy in
+      // memory only: announce the session again so the model picker and account
+      // calls work without a second sign-in.
+      React.useEffect(() => {
+        syncHost(session);
+      }, [session]);
+
       const label = session === null ? t.login : session.displayName || session.username || 'EZCloud';
+
+      // Signing out returns to the signed-out state, so the open dialog closes
+      // instead of turning into the sign-in form.
+      const changeSession = (next) => {
+        setSession(next);
+        if (next === null) setOpen(false);
+      };
 
       return h(
         React.Fragment,
@@ -488,13 +954,20 @@ window.__ModuleLoader__.load({
             : h('span', { key: 'avatar', className: 'ezagent-avatar', 'aria-hidden': 'true' }, initialOf(label)),
           wide ? h('span', { key: 'label', className: 'ezagent-foot-label' }, label) : null,
         ),
-        h(LoginDialog, {
-          key: 'dialog',
-          open,
-          session,
-          onClose: () => setOpen(false),
-          onSessionChange: setSession,
-        }),
+        session === null
+          ? h(SignInDialog, {
+              key: 'sign-in',
+              open,
+              onClose: () => setOpen(false),
+              onSessionChange: changeSession,
+            })
+          : h(AccountDialog, {
+              key: 'account',
+              open,
+              session,
+              onClose: () => setOpen(false),
+              onSessionChange: changeSession,
+            }),
       );
     }
     //#endregion
@@ -527,6 +1000,9 @@ window.__ModuleLoader__.load({
         readSession,
         signIn,
         signOut,
+        syncHost,
+        loadSnapshot,
+        loadModels,
       },
     };
   },
