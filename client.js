@@ -437,6 +437,8 @@ window.__ModuleLoader__.load({
 .ezagent-row-value{display:inline-flex;align-items:center;gap:8px;min-width:0;}
 .ezagent-row-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .ezagent-key{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;letter-spacing:.02em;}
+.ezagent-modal{width:min(720px,100%);max-height:min(88vh,920px);}
+.ezagent-modal-content{min-height:0;overflow-y:auto;}
 .ezagent-dialog{display:flex;flex-direction:column;gap:14px;max-height:min(62vh,560px);overflow:auto;padding-right:4px;}
 .ezagent-card{display:flex;flex-direction:column;gap:10px;padding:12px 14px;border:1px solid color-mix(in srgb,currentColor 12%,transparent);border-radius:12px;}
 .ezagent-card-head{display:flex;align-items:center;justify-content:space-between;gap:12px;}
@@ -590,6 +592,7 @@ window.__ModuleLoader__.load({
 
       return h(Modal, {
         open: props.open,
+        className: 'ezagent-modal',
         title: t.modalTitle,
         description: t.modalDescription,
         closeLabel: t.close,
@@ -916,6 +919,7 @@ window.__ModuleLoader__.load({
 
       return h(Modal, {
         open: props.open,
+        className: 'ezagent-modal',
         title: t.signedTitle,
         description: t.signedDescription,
         closeLabel: t.close,
