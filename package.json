@@ -1,0 +1,29 @@
+{
+  "name": "EZAgent",
+  "version": "1.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Rebrands the sidebar to 'deepseek EZAgent' and adds an EZCloud sign-in entry in the left menu.",
+  "icon": "./icon.png",
+  "engines": {
+    "dsh": ">=0.2.1-rc.5 <0.3.0-0"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./icon": "./icon.png"
+  },
+  "files": ["index.js", "client.js", "cordis.patch.yml", "icon.png"],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-primitives",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    }
+  }
+}
