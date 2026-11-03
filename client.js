@@ -122,6 +122,7 @@ window.__ModuleLoader__.load({
       modelsTitle: '可用模型',
       modelsCount: '共 {n} 个模型，已同步到 DSH 模型选择器。',
       modelsEmpty: '当前账号没有可用的 EZCloud 模型。',
+      modelsOff: 'DSH 模型选择器未接入 EZCloud',
       modelsLoading: '读取模型…',
       modelContext: '{n} 上下文',
       modelImage: '支持图片',
@@ -185,6 +186,7 @@ window.__ModuleLoader__.load({
       modelsTitle: 'Models',
       modelsCount: '{n} models, synced to the DSH model picker.',
       modelsEmpty: 'This account has no EZCloud models available.',
+      modelsOff: 'The DSH model picker is not connected to EZCloud',
       modelsLoading: 'Reading models…',
       modelContext: '{n} context',
       modelImage: 'image input',
@@ -253,6 +255,9 @@ window.__ModuleLoader__.load({
       return new URL(path.replace(/^\/+/, ''), hostBase()).href;
     }
 
+    // Transport failures are reported with their status and the server's own
+    // words: a silent "sign-in failed" hides the difference between a wrong
+    // password, an unsigned plugin route, and a rejected cross-origin call.
     async function postHost(path, payload) {
       let response;
       try {
@@ -262,12 +267,14 @@ window.__ModuleLoader__.load({
           body: JSON.stringify(payload),
           cache: 'no-store',
         });
-      } catch {
-        throw new Error(texts().errorBridge);
+      } catch (failure) {
+        const detail = failure instanceof Error && failure.message !== '' ? failure.message : String(failure);
+        throw new Error(`${texts().errorBridge}（${detail}）`);
       }
+      const text = await response.text();
       let body;
       try {
-        body = await response.json();
+        body = text === '' ? undefined : JSON.parse(text);
       } catch {
         body = undefined;
       }
@@ -275,7 +282,9 @@ window.__ModuleLoader__.load({
       const error = body !== null && typeof body === 'object' ? body.error : undefined;
       const message =
         error !== null && typeof error === 'object' && typeof error.message === 'string' ? error.message.trim() : '';
-      throw new Error(message === '' ? texts().errorLogin : message);
+      if (message !== '') throw new Error(message);
+      const snippet = text.trim().replace(/\s+/g, ' ').slice(0, 140);
+      throw new Error(`HTTP ${response.status}${snippet === '' ? '' : ` · ${snippet}`}`);
     }
 
     async function signIn(input) {
@@ -625,6 +634,7 @@ window.__ModuleLoader__.load({
       const session = props.session;
       const [snapshot, setSnapshot] = React.useState(null);
       const [models, setModels] = React.useState(null);
+      const [host, setHost] = React.useState(null);
       const [loading, setLoading] = React.useState(false);
       const [modelsLoading, setModelsLoading] = React.useState(false);
       const [error, setError] = React.useState('');
@@ -666,6 +676,9 @@ window.__ModuleLoader__.load({
         if (!props.open) return;
         readAccount.current();
         readModels.current(false);
+        postHost('diagnostics', {})
+          .then((body) => setHost(body))
+          .catch(() => setHost(null));
       }, [props.open, session.apiKey]);
 
       React.useEffect(() => {
@@ -881,6 +894,15 @@ window.__ModuleLoader__.load({
                       }),
                     ),
                   ),
+          host !== null && typeof host === 'object' && host.registered === false
+            ? h(
+                'p',
+                { className: 'ezagent-muted' },
+                typeof host.adapterError === 'string' && host.adapterError !== ''
+                  ? `${t.modelsOff} · ${host.adapterError}`
+                  : t.modelsOff,
+              )
+            : null,
         ),
 
         h(

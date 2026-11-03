@@ -82,6 +82,7 @@ EZAgent/
 | `/ezagent/ezcloud/account` | POST | 聚合余额、订阅、额度与计费方式 |
 | `/ezagent/ezcloud/models` | POST | 当前账号可用的模型列表（含刷新） |
 | `/ezagent/ezcloud/billing-preference` | POST | 修改计费优先级（`subscription_first` 等） |
+| `/ezagent/ezcloud/diagnostics` | POST | 宿主健康检查（模型 provider 是否注册、llm 服务是否可见） |
 
 模型接入走 DSH 的 LLM 服务：
 

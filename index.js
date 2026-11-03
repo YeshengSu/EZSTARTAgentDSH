@@ -63,6 +63,7 @@ const LlmAdapter = LlmAdapterBase;
 const LlmError = LlmErrorClass;
 const attributionHeaders = attribution;
 
+const PLUGIN_VERSION = '1.3.1';
 const EZCLOUD_BASE_URL = 'https://api.ezstartai.com';
 const API_KEY_NAME = 'EZAgent';
 const ROUTE_PREFIX = '/ezagent/ezcloud';
@@ -1024,15 +1025,69 @@ function isForeignRequest(ctx, request) {
 }
 
 export const name = 'ezagent-host';
-export const inject = ['webServer', 'llm'];
+
+/**
+ * Only `webServer` is a hard dependency. The LLM registry is optional on
+ * purpose: a profile plugin does not always see the host's `llm` service while
+ * its fiber starts, and waiting for it would leave `apply` unexecuted — which
+ * also drops the HTTP routes below. The service is picked up lazily instead, so
+ * the account panel works even when model registration is unavailable.
+ */
+export const inject = ['webServer'];
+
+/** Outcome of the optional provider registration, surfaced through `/diagnostics`. */
+const adapterState = { registered: false, error: '' };
+
+function messageOf(error) {
+  return error instanceof Error && error.message !== '' ? error.message : String(error);
+}
 
 export function apply(ctx) {
-  const adapter = new EzCloudAdapter(ctx);
-  ctx.llm.registerAdapter([{ id: PROVIDER_ID, name: PROVIDER_NAME }], adapter);
+  const llmOf = () => {
+    try {
+      const llm = typeof ctx.get === 'function' ? ctx.get('llm') : undefined;
+      return llm === null || llm === undefined || typeof llm.registerAdapter !== 'function' ? undefined : llm;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const registerProvider = () => {
+    const llm = llmOf();
+    if (llm === undefined) {
+      adapterState.registered = false;
+      adapterState.error = '宿主端尚未提供 llm 服务';
+      return false;
+    }
+    try {
+      llm.registerAdapter([{ id: PROVIDER_ID, name: PROVIDER_NAME }], new EzCloudAdapter(ctx));
+      adapterState.registered = true;
+      adapterState.error = '';
+      return true;
+    } catch (error) {
+      adapterState.registered = false;
+      adapterState.error = messageOf(error);
+      return false;
+    }
+  };
+
+  if (!registerProvider()) {
+    // The registry usually appears after the profile plugin's own fiber starts;
+    // retry once it is announced, and give up quietly when it never arrives.
+    try {
+      ctx.inject(['llm'], () => {
+        registerProvider();
+      });
+    } catch {
+      /* keep the HTTP routes usable even without model registration */
+    }
+  }
 
   const announce = () => {
+    const llm = llmOf();
+    if (llm === undefined || typeof llm.emitAdaptersUpdated !== 'function') return;
     try {
-      ctx.llm.emitAdaptersUpdated();
+      llm.emitAdaptersUpdated();
     } catch {
       /* observers are best-effort */
     }
@@ -1128,6 +1183,21 @@ export function apply(ctx) {
                 body: JSON.stringify({ billing_preference: preference }),
               });
               sendJson(response, 200, { ok: true, preference });
+              return;
+            }
+
+            // Health probe: lets the account panel explain a missing model
+            // group instead of silently showing an empty picker.
+            if (pathname === `${ROUTE_PREFIX}/diagnostics`) {
+              sendJson(response, 200, {
+                ok: true,
+                plugin: PLUGIN_VERSION,
+                provider: PROVIDER_ID,
+                registered: adapterState.registered,
+                adapterError: adapterState.error,
+                llmAvailable: llmOf() !== undefined,
+                signedIn: liveSession !== null,
+              });
               return;
             }
 
