@@ -1,0 +1,159 @@
+# AGENTS.md — EZSTARTAgentDSH（EZAgent 插件）
+
+本文件是本仓库的工作约定，整合三份规则：
+`karpathy-guidelines.md`（编码原则）、`superpowers.md`（铁律与触发字典）、
+`superpowersrules.md`（生命周期与调试红线）。
+
+**优先级**：用户当前指令 > 本文件 > 一般习惯。本文件与用户指令冲突时，先向用户确认，不要自行取舍。
+**作用域**：`E:\Codes\EZSTARTAgentDSH` 及其子目录。个人临时规则请用 `AGENTS.local.md`（不入库）。
+
+---
+
+## 1. 四条铁律（不可跳过）
+
+1. **NO FIX WITHOUT ROOT CAUSE** — 报错、测试失败、UI 异常时，禁止直接给补丁；先 `systematic-debugging` 查明根因，用证据说明“为什么是这个原因”。
+2. **NO PRODUCTION CODE WITHOUT RED TEST** — 写业务代码前先有一个失败的测试或可复现的失败用例。做不到时，必须在回复里说明原因和替代验证方式。
+3. **NO BLIND MOCKING** — 测试真实行为，不 mock 被测对象自身的行为；只 mock 外部边界（网络、时钟、文件系统）。
+4. **NO GUESSING THE OUTPUT** — 没有实际运行命令并看到输出，不许说“完成 / 已修复 / 通过”。结论必须附命令与关键输出。
+
+这三条来自「简单问题也适用」的判断：简单问题同样会破坏系统，不能用“太简单”当豁免理由。
+
+---
+
+## 2. 触发字典（场景 → 必调技能）
+
+本会话可用技能名以 `skill` 工具目录为准；表中列出必须优先尝试的名称。
+
+| 场景 | 技能 |
+| --- | --- |
+| 新功能需求、重构系统、需求存在歧义 | `brainstorming` |
+| 讨论结束，要拆出带复选框的执行步骤 | `writing-plans` |
+| 开始实现某个功能（多步骤/跨文件） | `executing-plans` 或 `subagent-driven-development` |
+| 写第一行业务逻辑之前 | `test-driven-development` |
+| 代码抛错 / 测试失败 / 行为不符合预期 | `systematic-debugging` |
+| 功能完成，准备继续下一个任务 | `requesting-code-review` |
+| 收到评审意见后动手改之前 | `receiving-code-review` |
+| 认为“做完了”，准备汇报成功之前 | `verification-before-completion` |
+| 需要隔离工作区 / 并行开发 | `using-git-worktrees` |
+| 分支收尾、决定如何合并 | `finishing-a-development-branch` |
+| 2 个以上互不依赖的验证/调研任务 | `dispatching-parallel-agents` |
+| 卡壳、架构冲突、反复失败 | `brainstorming` + `dispatching-parallel-agents`（并行取证） |
+
+**目录中不存在的技能**（不要假装调用）与替代：
+
+| 原规则要求 | 本会话没有时改用 |
+| --- | --- |
+| `when-stuck`（卡壳破局） | `brainstorming`，必要时加 `dispatching-parallel-agents` 并行取证 |
+| `root-cause-tracing`（深层调用栈追溯） | `systematic-debugging`，并在回复里列出根因证据链 |
+| `testing-anti-patterns`（Mock 审查） | 直接按第 1 节第 3 条自查；违反就重写测试 |
+| `condition-based-waiting`（异步等待） | 用轮询/事件断言代替固定 sleep，并在测试名里写明等待条件 |
+| `simplification-cascades`（过度耦合简化） | `brainstorming` 出简化方案 + `requesting-code-review` 复核 |
+
+替代时在回复里写“以 X 替代 Y”，不要直接跳过。
+
+**技能必须真实加载**：调用 `skill` 工具拿到 `skill_content` 后再执行；禁止只在文字里提一句技能名。
+
+---
+
+## 3. 生命周期（功能类需求，默认全流程）
+
+```
+brainstorming → using-git-worktrees(可选) → writing-plans
+  → test-driven-development → requesting-code-review
+  → verification-before-completion → finishing-a-development-branch
+```
+
+- **brainstorming**：先把歧义问清楚（目标、边界、不做什么、验收标准），列出 2–3 个方案与取舍，再选一个。
+- **worktrees**：与当前工作区冲突或需要并行隔离时先开 worktree；单点小改动可跳过，并在计划里写明理由。
+- **writing-plans**：计划里每一步都要有“验证：[检查点]”，没有验证方式的步骤不算计划。
+- **TDD**：红 → 绿 → 重构；测试放仓库内可执行位置或 `%TEMP%\ezagent-harness` 的 harness 用例中。
+- **review**：自查 diff 是否每一行都能追溯到需求；发现无关改动就撤回。
+- **verify**：见第 6 节的验证命令清单。
+- **finish**：说明改动、影响面、回滚方式。
+
+**放宽条件**：拼写错误、纯文案调整、单行显式修复这类任务可以只做“改完 → 跑验证”，但第 1 节第 4 条
+（不许猜输出）与第 6 节的最小验证仍然适用。
+
+---
+
+## 4. 工具映射（Trae 规则 → DSH）
+
+| Trae 规则中的做法 | 本仓库对应做法 |
+| --- | --- |
+| `TodoWrite` 可视化跟踪 | `todo_write`：多步骤技能/任务开始前先建 todo，做完一项立即置 `completed` |
+| `Task` 派发子代理 + 两阶段审查 | `subagent` / `subagent_fork`；大规模扇出用 `workflow`。子代理返回后先审“需求对齐”，再审“代码质量”，不通过就退回 |
+| `manage_core_memory` 写项目记忆 | `mnemon_runtime_memory`（短小、长期有效的约定/偏好）；结构化的项目知识用 `mnemon_document_create` / `mnemon_document_manage` |
+| `Skill(name=...)` | `skill` 工具（先取 `skill_content`，再执行） |
+
+写记忆的边界：只记用户明确说过或纠正过的、可复用的事实；不记临时进度、不记本次任务的完成日志。
+
+---
+
+## 5. Karpathy 四原则（精简）
+
+1. **先思考再编码**：显式写出假设；有歧义就提问；有更简单的方案就先说；卡住时命名卡点，而不是硬写。
+2. **简洁优先**：最少代码解决问题；不做没要求的“灵活性/可配置性”；不为不可能的场景写错误处理；200 行能压到 50 行就重写。
+3. **精准修改**：不做“顺手改进”；不重构没坏的代码；保持现有风格；发现无关死代码只提出、不删除；只清理**自己**造成的孤儿代码。
+4. **目标驱动**：把指令翻译成可验证目标（“先写复现测试，再让它通过”），多步骤任务先列 `步骤 → 验证` 计划。
+
+自测问句：**“资深工程师会觉得这过于复杂吗？”** 是，就简化。
+
+---
+
+## 6. 本仓库专属约定
+
+**结构**：`index.js` 宿主半端（路由 + `ezcloud` LLM provider）、`client.js` 浏览器半端（侧边栏入口、账号弹窗）、
+`cordis.patch.yml` 插件挂载、`package.json` 清单、`README.md` 文档。`.probe/` 是本地排查脚本，已 gitignore，不提交。
+
+**改动的生效方式**
+
+- 只改 `client.js` → 刷新页面即可。
+- 改 `index.js`（宿主半端）→ 必须完全重启 DSH。
+- 两者都改 → 按重启处理。
+
+**验证命令（改动后至少跑对应项，并保留输出）**
+
+```powershell
+node --check index.js
+node --check client.js
+$env:DSH_HOME = Join-Path $env:TEMP ("ezagent-dsh-home-" + [guid]::NewGuid().ToString('N'))
+Set-Location "$env:TEMP\ezagent-harness"
+node host.test.mjs        # 路由、目录过滤、账户换算、SSE、错误码
+node host.nollm.test.mjs  # 没有 llm 服务时路由仍可用
+node client.smoke.mjs     # 客户端模块加载、弹窗渲染、模型选择请求
+```
+
+harness 位于 `%TEMP%\ezagent-harness`（`host.mjs` 是 `index.js` 的副本，改动后需重新复制）。
+**每次运行测试都要给一个新的 `DSH_HOME`**，否则上次持久化的会话会让“未登录”用例失败。
+
+**安装同步**：DSH 实际加载 `C:\Users\Administrator\Documents\deepseek-harness\default-workspace\EZAgent`
+（profile 的 `node_modules\EZAgent` 指向它）。改完必须复制过去并比对 SHA256，否则用户看到的是旧版本。
+
+**版本号**：同时更新 `package.json` 的 `version` 与 `index.js` 的 `PLUGIN_VERSION`，并同步 README 中出现的版本描述。
+
+**文档**：行为、路由、安装步骤、已知限制发生变化时同步更新 `README.md`（中英两节都要）。
+
+**外部依赖**：EZCloud 接口在 `https://api.ezstartai.com`；dashboard 用 device key，聊天用 `sk-` 密钥。
+接口字段以实际响应为准，拿不到真实响应时不要凭想象写解析逻辑。
+
+---
+
+## 7. 红旗清单（出现即停手，回到流程）
+
+- “这个问题太简单，不用设计/不用测试” → 至少写一个可复现的验证。
+- “先写完代码，回头补测试” → 后补的测试只验证实现，不验证需求。
+- “我手动点过，应该没问题” → 手动验证不防回归，必须跑命令。
+- “先改着看看，不行再回滚” → 先定位根因，再动手。
+- “顺手把这附近也优化一下” → 超出需求的改动一律不做。
+- “输出应该是这样” → 没运行就不算证据。
+
+---
+
+## 8. 汇报格式
+
+完成任务时按以下顺序给出，缺项要说明原因：
+
+1. **改了什么**（文件 + 行为，一句话一条）
+2. **验证证据**（命令 + 关键输出；无法运行的说明原因）
+3. **影响面与生效方式**（刷新 / 重启 / 同步目录）
+4. **未验证或已知限制**（明确列出，不用“应该没问题”搪塞）
