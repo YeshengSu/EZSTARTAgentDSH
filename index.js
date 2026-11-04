@@ -67,7 +67,7 @@ const LlmAdapter = LlmAdapterBase;
 const LlmError = LlmErrorClass;
 const attributionHeaders = attribution;
 
-const PLUGIN_VERSION = '1.5.4';
+const PLUGIN_VERSION = '1.5.5';
 const EZCLOUD_BASE_URL = 'https://api.ezstartai.com';
 const API_KEY_NAME = 'EZAgent';
 const ROUTE_PREFIX = '/ezagent/ezcloud';
@@ -82,14 +82,18 @@ const PRICING_CACHE_MS = 10 * 60 * 1000;
 const DEFAULT_CONTEXT_WINDOW = 131072;
 const DEFAULT_MAX_TOKENS = 32768;
 /**
- * Reasoning levels the gateway accepts. Sending anything else makes it reroute
- * the request to a different model without an error, so this list is also the
- * whitelist used when building the request body.
+ * Reasoning levels this gateway accepts without silently rerouting the call to
+ * a different model. Measured against api.ezstartai.com: `low|medium|high|max`
+ * keep the requested Anthropic model, while `none|minimal|ultra` fall back to
+ * `deepseek-flash` and `off` is rejected with 422. There is no true "off": an
+ * omitted `reasoning_effort` leaves the model's own adaptive thinking on, so it
+ * is not offered as a level.
  */
 const REASONING_EFFORTS = [
-  { id: 'low', name: '低' },
-  { id: 'medium', name: '中' },
-  { id: 'high', name: '高' },
+  { id: 'low', name: 'Low' },
+  { id: 'medium', name: 'Medium' },
+  { id: 'high', name: 'High' },
+  { id: 'max', name: 'Max' },
 ];
 const DEFAULT_REASONING_EFFORT = 'high';
 const REASONING_EFFORT_IDS = new Set(REASONING_EFFORTS.map((effort) => effort.id));

@@ -57,7 +57,7 @@ EZSTART Agent 的 DeepSeek Harness 插件：把 DSH 侧边栏品牌改成 **deep
 
 选中 EZCloud 模型后，模型菜单会多出两样东西：
 
-- **推理等级**：低 / 中 / 高，默认「高」。宿主只把这三个值写进请求的 `reasoning_effort`；其它取值一律不发送，因为网关遇到不认识的档位会**静默换一个模型**回答。
+- **推理等级**：`Low / Medium / High / Max`，默认 High。只有这四个值会被写进请求的 `reasoning_effort`。实测（api.ezstartai.com）：`low|medium|high|max` 会保持请求的模型，`none|minimal|ultra` 会被**静默换成 deepseek-flash**，`off` 直接 422；也没有真正的「关闭」——不传该字段时模型仍按自己的自适应策略思考（实测 Claude-Opus-5 仍产生 95 个 reasoning tokens），所以不提供 Off 档。
 - **E 消耗徽标与悬停卡**：行右侧只显示数字 `E 2,400`——token 计费模型是每 100 万 token 的均价，按次计费模型是每次调用价，单位写在悬停卡里；悬停展开供应商、模型介绍、输入 / 输出 / 缓存读取 / 缓存写入单价与单位说明。价格由 `/api/pricing` 的 `billing_expr` 系数（美元 / 1M token）按 `credits_per_usd` 换算成 E，不用后端那几个占位性质的 `credits` / `avg_credits` 字段。
 
 这两样都走 DSH 自己的扩展点（`reasoning.efforts` 与 `conversation.input.model.label`），不替换内置选择器，所以 DSH 更新选择器时会自动跟随。未登录、目录读取失败或价格字段缺失时，选择器退回只显示模型名，不会报错。
