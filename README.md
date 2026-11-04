@@ -20,7 +20,61 @@ EZSTART Agent 的 DeepSeek Harness 插件：把 DSH 侧边栏品牌改成 **deep
 - **登录态持久化**：会话存在浏览器 `localStorage`，刷新页面或重启应用后由页面自动向宿主端同步，模型分组随之恢复。
 - **品牌更名**：侧边栏 wordmark 显示为 `deepseek EZAgent`。
 
-## 安装
+## 分发与安装
+
+插件不发布到公共 npm，分发物是一个 tgz（只含插件自己的 6 个文件，不含 `node_modules`）。使用者在自己机器上安装。
+
+### 使用者：安装
+
+**方式一：图形界面（无需命令行）**
+
+1. 打开 DeepSeek Harness，左侧「插件」→「添加插件」。
+2. 粘贴 tgz 的绝对路径，例如 `C:\Users\you\Downloads\EZAgent-<version>.tgz`（把 `<version>` 换成实际版本号）。
+3. 需要时再按包名添加公开插件（见下方「公开插件」）。
+4. 重启 DeepSeek Harness。
+
+**方式二：安装脚本**
+
+把 `install.ps1` 和 `EZAgent-<version>.tgz` 放同一目录，完全退出 DeepSeek Harness 后：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+只装 EZAgent、不联网安装公开插件：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -LocalOnly
+```
+
+脚本依次检查 tgz 是否存在、DSH 桌面版配置是否已初始化、应用是否已退出、`dsh` 命令是否可用；没有 `dsh` 时打印图形界面步骤。装完读取 profile 的 `dsh.profile.bundles` 确认已启用。
+
+> 安装后 `%USERPROFILE%\.dsh\profiles\desktop\package.json` 的 `dependencies` 与 `dsh.profile.bundles` 都会出现 `EZAgent`，无需手工编辑。
+
+### 维护者：发版
+
+```powershell
+# 1. 改 package.json 的 version
+# 2. 打包
+npm run pack
+```
+
+产出 `dist/`：`EZAgent-<version>.tgz` + `install.ps1`，把整个目录压缩发给使用者即可。`npm run pack` 每次先清空 `dist`，保证里面只有当前版本；tgz 内容由 `files` 白名单决定。
+
+### 公开插件
+
+安装脚本默认还会从 npm 源下载两个公开插件（不随 tgz 分发）：
+
+| 包 | 版本 | 说明 |
+| --- | --- | --- |
+| `dsh-mnemon` | 0.5.39 | 可组合记忆 |
+| `@huanlin/dsh-plugin-better-sidebar-plugin-office` | 0.2.0 | Office 预览；需要 `dsh-better-sidebar` |
+
+离线机器用 `-LocalOnly` 跳过，或改用插件页按包名手动安装。
+
+### 开发调试
+
+把本仓库链接进 profile，改 `client.js` 后刷新页面即可看到效果：
 
 1. 把本仓库克隆（或链接）到任意目录，例如：
 
@@ -162,7 +216,7 @@ After signing in, an **EZCloud** group appears in the model picker with the mode
 
 The browser half never calls EZCloud directly — the deployed gateway omits CORS headers on real responses — so every call is proxied through the plugin's host half at `/ezagent/ezcloud/*`. Chat traffic streams through the plugin's own `LlmAdapter` against the OpenAI-compatible endpoint. Only the API key, account labels, and the revocable device key are kept in local storage; the dashboard access token is not persisted.
 
-Install by linking the package into your DSH profile's `dependencies` and adding it to `dsh.profile.bundles`, then restart DeepSeek Harness.
+Distribution is a `.tgz` built with `npm run pack` (output in `dist/`, shipped together with `install.ps1`). Users install it from the plugin page by pasting the absolute path, or run `install.ps1` with DeepSeek Harness fully closed; the script also installs two public plugins from npm unless `-LocalOnly` is passed. For development, link the repository into your DSH profile's `dependencies` and add it to `dsh.profile.bundles` instead, then restart DeepSeek Harness.
 
 ## License
 
