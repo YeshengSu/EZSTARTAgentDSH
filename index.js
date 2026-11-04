@@ -81,6 +81,17 @@ const STATUS_CACHE_MS = 5 * 60 * 1000;
 const PRICING_CACHE_MS = 10 * 60 * 1000;
 const DEFAULT_CONTEXT_WINDOW = 131072;
 const DEFAULT_MAX_TOKENS = 32768;
+/**
+ * Reasoning levels the gateway accepts. Sending anything else makes it reroute
+ * the request to a different model without an error, so this list is also the
+ * whitelist used when building the request body.
+ */
+const REASONING_EFFORTS = [
+  { id: 'low', name: '低' },
+  { id: 'medium', name: '中' },
+  { id: 'high', name: '高' },
+];
+const DEFAULT_REASONING_EFFORT = 'high';
 const IMAGE_PIXEL_BUDGET = 4194304;
 const IMAGE_BYTE_BUDGET = 1048576;
 
@@ -859,6 +870,10 @@ class EzCloudAdapter extends LlmAdapter {
       ...(entry === undefined ? {} : { inputModalities: entry.input }),
       context: { contextWindow: entry === undefined ? DEFAULT_CONTEXT_WINDOW : entry.contextWindow },
       defaultMaxTokens: entry === undefined ? DEFAULT_MAX_TOKENS : entry.maxTokens,
+      reasoning: {
+        efforts: REASONING_EFFORTS.map((effort) => ({ ...effort })),
+        defaultEffort: DEFAULT_REASONING_EFFORT,
+      },
     };
   }
 
