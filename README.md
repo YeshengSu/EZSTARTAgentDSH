@@ -16,6 +16,7 @@ EZSTART Agent 的 DeepSeek Harness 插件：把 DSH 侧边栏品牌改成 **deep
 - **EZCloud 模型接入**：宿主端注册 `ezcloud` provider，`listModels()` 只在该账号登录后返回其可用模型（来自 `/api/user/self/models`，并与 `/api/pricing` 合并出厂商、上下文、输入模态、单价）。未登录时返回空列表，DSH 会把空分组从选择器里过滤掉，因此**不登录就看不到**。
 - **流式对话**：`POST /v1/chat/completions`（OpenAI 兼容，SSE），支持文本增量、推理增量、工具调用、用量统计与错误码映射。
 - **账户详情**：钱包余额（E 额度）、已用额度、请求数、订阅套餐（名称/等级/到期时间）、三档额度进度条、计费方式切换、密钥复制、退出登录。
+- **弹窗内选模型**：账号弹窗列出账号可用模型，点击任一行即把当前会话切到该模型（调用 DSH 会话的模型选择接口），并显示模型选择器里实际可选的 EZCloud 模型数量。
 - **登录态持久化**：会话存在浏览器 `localStorage`，刷新页面或重启应用后由页面自动向宿主端同步，模型分组随之恢复。
 - **品牌更名**：侧边栏 wordmark 显示为 `deepseek EZAgent`。
 
@@ -107,6 +108,8 @@ ctx.llm.registerAdapter([{ id: 'ezcloud', name: 'EZCloud' }], new EzCloudAdapter
 - `deviceKey` —— 调用 dashboard 接口与退出登录时撤销
 
 **不保存** dashboard 的 `access_token` 与 session id：它们只在宿主端登录过程中使用，不进浏览器存储。
+
+宿主端还会把当前会话镜像到 `%USERPROFILE%\.dsh\ezagent-session.json`（权限 0600），这样重启 DSH 后、页面尚未重新同步前，模型选择器也能立刻拿到 EZCloud 模型；退出登录会删除该文件。
 
 ## 安全说明
 

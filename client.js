@@ -120,9 +120,16 @@ window.__ModuleLoader__.load({
       prefSubscriptionOnly: '仅订阅',
       prefWalletOnly: '仅钱包',
       modelsTitle: '可用模型',
-      modelsCount: '共 {n} 个模型，已同步到 DSH 模型选择器。',
+      modelsCount: '该账号共 {n} 个可用模型。',
       modelsEmpty: '当前账号没有可用的 EZCloud 模型。',
       modelsOff: 'DSH 模型选择器未接入 EZCloud',
+      pickerReady: '模型选择器已加载 {n} 个 EZCloud 模型，点击下方即可切换。',
+      pickerMissing: '模型选择器未显示 EZCloud 模型',
+      select: '使用',
+      selected: '使用中',
+      errorSelectUnavailable: '当前环境不支持切换模型',
+      errorSelectNoSession: '没有找到当前会话',
+      errorSelectFailed: '切换模型失败',
       modelsLoading: '读取模型…',
       modelContext: '{n} 上下文',
       modelImage: '支持图片',
@@ -184,9 +191,16 @@ window.__ModuleLoader__.load({
       prefSubscriptionOnly: 'Plan only',
       prefWalletOnly: 'Wallet only',
       modelsTitle: 'Models',
-      modelsCount: '{n} models, synced to the DSH model picker.',
+      modelsCount: 'This account can use {n} models.',
       modelsEmpty: 'This account has no EZCloud models available.',
       modelsOff: 'The DSH model picker is not connected to EZCloud',
+      pickerReady: 'The model picker exposes {n} EZCloud models; click one below to switch.',
+      pickerMissing: 'EZCloud is missing from the model picker',
+      select: 'Use',
+      selected: 'In use',
+      errorSelectUnavailable: 'This build cannot switch models',
+      errorSelectNoSession: 'No active conversation found',
+      errorSelectFailed: 'Could not switch the model',
       modelsLoading: 'Reading models…',
       modelContext: '{n} context',
       modelImage: 'image input',
@@ -354,6 +368,81 @@ window.__ModuleLoader__.load({
       return preference;
     }
 
+    //#region DSH model selection
+    // The plugin's account dialog can hand a model to the conversation: the
+    // client session controller owns the selection, and the `uiSession`
+    // service exposes the Session the composer is currently bound to.
+    let appCtx = null;
+
+    function currentSessionId() {
+      try {
+        const ui = typeof appCtx?.get === 'function' ? appCtx.get('uiSession') : undefined;
+        if (ui === null || ui === undefined) return '';
+        // `adapter.current` is the renderer-facing source other UI plugins read;
+        // its snapshot carries the Session identity in `key`.
+        const source = ui.adapter === undefined ? undefined : ui.adapter.current;
+        if (source !== undefined && source !== null && typeof source.getSnapshot === 'function') {
+          const snapshot = source.getSnapshot();
+          const id = snapshot === null || snapshot === undefined ? undefined : snapshot.key;
+          if (typeof id === 'string' && id !== '') return id;
+        }
+        const value = ui.current === null || ui.current === undefined ? undefined : ui.current.value;
+        if (value === null || value === undefined) return '';
+        if (typeof value.key === 'string' && value.key !== '') return value.key;
+        const id = value.props === undefined ? undefined : value.props.sessionId;
+        return typeof id === 'string' ? id : '';
+      } catch {
+        return '';
+      }
+    }
+
+    function sessionRemote() {
+      try {
+        const remote = typeof appCtx?.get === 'function' ? appCtx.get('remote') : undefined;
+        return remote !== null && remote !== undefined && remote.session !== undefined ? remote.session : undefined;
+      } catch {
+        return undefined;
+      }
+    }
+
+    /** Provider group `ezcloud` as the DSH model picker sees it, or null when unreadable. */
+    async function readPickerCatalog() {
+      const remote = sessionRemote();
+      if (remote === undefined || typeof remote.modelCatalog !== 'function') return null;
+      const result = await remote.modelCatalog();
+      if (result === null || typeof result !== 'object' || result.ok !== true) {
+        const message = result !== null && typeof result === 'object' && result.error !== null && typeof result.error === 'object' ? result.error.message : '';
+        return { present: false, count: 0, message: typeof message === 'string' ? message : '', defaultModel: '', defaultProvider: '' };
+      }
+      const value = result.value;
+      const groups = value !== null && typeof value === 'object' && Array.isArray(value.groups) ? value.groups : [];
+      const group = groups.find((item) => item !== null && typeof item === 'object' && item.id === 'ezcloud');
+      const fallback = value !== null && typeof value === 'object' && value.default !== null && typeof value.default === 'object' ? value.default : {};
+      return {
+        present: group !== undefined,
+        count: group === undefined ? 0 : Array.isArray(group.models) ? group.models.length : 0,
+        message: '',
+        defaultProvider: typeof fallback.provider === 'string' ? fallback.provider : '',
+        defaultModel: typeof fallback.model === 'string' ? fallback.model : '',
+      };
+    }
+
+    /** Route the current conversation to one EZCloud model. */
+    async function selectEzcloudModel(modelId) {
+      const t = texts();
+      const remote = sessionRemote();
+      if (remote === undefined || typeof remote.selectModel !== 'function') throw new Error(t.errorSelectUnavailable);
+      const sessionId = currentSessionId();
+      if (sessionId === '') throw new Error(t.errorSelectNoSession);
+      const result = await remote.selectModel({ sessionId, provider: 'ezcloud', model: modelId });
+      if (result === null || typeof result !== 'object' || result.ok !== true) {
+        const message = result !== null && typeof result === 'object' && result.error !== null && typeof result.error === 'object' ? result.error.message : '';
+        throw new Error(typeof message === 'string' && message.trim() !== '' ? message.trim() : t.errorSelectFailed);
+      }
+      return true;
+    }
+    //#endregion
+
     function maskKey(key) {
       if (typeof key !== 'string' || key.length <= 10) return '••••••••';
       return `${key.slice(0, 6)}••••••${key.slice(-4)}`;
@@ -464,6 +553,12 @@ window.__ModuleLoader__.load({
 .ezagent-models{display:flex;flex-direction:column;max-height:190px;overflow:auto;}
 .ezagent-model{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid color-mix(in srgb,currentColor 7%,transparent);}
 .ezagent-model:last-child{border-bottom:0;}
+.ezagent-model{width:100%;border-left:0;border-right:0;border-top:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;border-radius:0;}
+.ezagent-model:hover:not(:disabled){background:color-mix(in srgb,currentColor 6%,transparent);}
+.ezagent-model:disabled{cursor:default;}
+.ezagent-model[data-active="true"] .ezagent-model-name{color:#4d6bfe;font-weight:600;}
+.ezagent-model-action{flex:none;font-size:11px;color:#4d6bfe;}
+.ezagent-model:disabled .ezagent-model-action{color:color-mix(in srgb,currentColor 45%,transparent);}
 .ezagent-model-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;}
 .ezagent-model-meta{flex:none;font-size:11px;color:color-mix(in srgb,currentColor 50%,transparent);}
 .ezagent-link{color:#4d6bfe;font-size:12px;text-decoration:none;}
@@ -638,6 +733,10 @@ window.__ModuleLoader__.load({
       const [snapshot, setSnapshot] = React.useState(null);
       const [models, setModels] = React.useState(null);
       const [host, setHost] = React.useState(null);
+      const [catalog, setCatalog] = React.useState(null);
+      const [activeModel, setActiveModel] = React.useState('');
+      const [selecting, setSelecting] = React.useState('');
+      const [selectError, setSelectError] = React.useState('');
       const [loading, setLoading] = React.useState(false);
       const [modelsLoading, setModelsLoading] = React.useState(false);
       const [error, setError] = React.useState('');
@@ -668,10 +767,36 @@ window.__ModuleLoader__.load({
         setModelsError('');
         try {
           setModels(await loadModels(session, refresh === true));
+          // Announce the session again so the host can rebuild the provider
+          // catalog, then read what the composer will actually offer.
+          await syncHost(session);
+          let picker = await readPickerCatalog();
+          if (picker !== null && picker.present !== true) {
+            await new Promise((resolve) => window.setTimeout(resolve, 600));
+            picker = await readPickerCatalog();
+          }
+          setCatalog(picker);
+          if (picker !== null && picker.defaultProvider === 'ezcloud' && picker.defaultModel !== '') {
+            setActiveModel(picker.defaultModel);
+          }
         } catch (failure) {
           setModelsError(failure instanceof Error && failure.message !== '' ? failure.message : t.errorModels);
         } finally {
           setModelsLoading(false);
+        }
+      };
+
+      const chooseModel = async (modelId) => {
+        if (selecting !== '') return;
+        setSelecting(modelId);
+        setSelectError('');
+        try {
+          await selectEzcloudModel(modelId);
+          setActiveModel(modelId);
+        } catch (failure) {
+          setSelectError(failure instanceof Error && failure.message !== '' ? failure.message : t.errorSelectFailed);
+        } finally {
+          setSelecting('');
         }
       };
 
@@ -876,6 +1001,16 @@ window.__ModuleLoader__.load({
                     React.Fragment,
                     null,
                     h('p', { className: 'ezagent-muted' }, t.modelsCount.replace('{n}', String(models.length))),
+                    catalog === null
+                      ? null
+                      : h(
+                          'p',
+                          { className: catalog.present ? 'ezagent-muted' : 'ezagent-error' },
+                          catalog.present
+                            ? t.pickerReady.replace('{n}', String(catalog.count))
+                            : `${t.pickerMissing}${catalog.message === '' ? '' : ` · ${catalog.message}`}`,
+                        ),
+                    selectError === '' ? null : h('p', { className: 'ezagent-error' }, selectError),
                     h(
                       'div',
                       { className: 'ezagent-models' },
@@ -888,11 +1023,22 @@ window.__ModuleLoader__.load({
                         ]
                           .filter((part) => part !== '')
                           .join(' · ');
+                        const active = activeModel === model.id;
+                        const busy = selecting === model.id;
                         return h(
-                          'div',
-                          { className: 'ezagent-model', key: model.id, title: description.slice(0, 400) },
-                          h('code', { className: 'ezagent-model-name' }, model.id),
+                          'button',
+                          {
+                            type: 'button',
+                            className: 'ezagent-model',
+                            key: model.id,
+                            title: description.slice(0, 400),
+                            'data-active': active ? 'true' : 'false',
+                            disabled: selecting !== '',
+                            onClick: () => chooseModel(model.id),
+                          },
+                          h('span', { className: 'ezagent-model-name' }, model.id),
                           h('span', { className: 'ezagent-model-meta' }, meta),
+                          h('span', { className: 'ezagent-model-action' }, busy ? t.loading : active ? t.selected : t.select),
                         );
                       }),
                     ),
@@ -1001,6 +1147,7 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots'],
       apply(ctx) {
+        appCtx = ctx;
         // The shipped official wordmark is a single occupant of this slot. A
         // lower priority sorts ahead of it, so this occupant wins the cell.
         ctx.slots.inject('sidebar.brand.name', () =>
@@ -1029,6 +1176,9 @@ window.__ModuleLoader__.load({
         syncHost,
         loadSnapshot,
         loadModels,
+        currentSessionId,
+        readPickerCatalog,
+        selectEzcloudModel,
       },
     };
   },

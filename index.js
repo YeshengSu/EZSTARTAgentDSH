@@ -25,6 +25,10 @@
  * harness present we reuse its `LlmAdapter`/`LlmError` identity, and otherwise
  * the local definitions below keep the provider contract intact.
  */
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
 let LlmAdapterBase = class LlmAdapter {
   providerInfo(provider) {
     return { id: provider, name: provider };
@@ -63,7 +67,7 @@ const LlmAdapter = LlmAdapterBase;
 const LlmError = LlmErrorClass;
 const attributionHeaders = attribution;
 
-const PLUGIN_VERSION = '1.3.1';
+const PLUGIN_VERSION = '1.4.0';
 const EZCLOUD_BASE_URL = 'https://api.ezstartai.com';
 const API_KEY_NAME = 'EZAgent';
 const ROUTE_PREFIX = '/ezagent/ezcloud';
@@ -80,11 +84,41 @@ const DEFAULT_MAX_TOKENS = 32768;
 const IMAGE_PIXEL_BUDGET = 4194304;
 const IMAGE_BYTE_BUDGET = 1048576;
 
-/** Session the client last announced (in-memory only: the key stays on disk in the page's storage). */
+/** Session the client last announced, mirrored to disk so the provider survives a restart. */
 let liveSession = null;
 let modelCache = { key: '', at: 0, entries: [] };
 let statusCache = { at: 0, creditsPerUsd: 500, quotaPerUnit: 500000 };
 let pricingCache = { at: 0, rows: [], vendors: new Map() };
+
+const DSH_HOME = process.env.DSH_HOME !== undefined && process.env.DSH_HOME !== '' ? process.env.DSH_HOME : join(homedir(), '.dsh');
+const SESSION_FILE = join(DSH_HOME, 'ezagent-session.json');
+
+/** Mirror the announced session so the model picker works before the page re-syncs. */
+function persistSessionFile(session) {
+  try {
+    mkdirSync(DSH_HOME, { recursive: true });
+    writeFileSync(SESSION_FILE, JSON.stringify(session), { encoding: 'utf8', mode: 0o600 });
+  } catch {
+    /* a read-only home only costs the early-startup catalog */
+  }
+}
+
+function readSessionFile() {
+  try {
+    const parsed = JSON.parse(readFileSync(SESSION_FILE, 'utf8'));
+    return normalizeSession(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function forgetSessionFile() {
+  try {
+    rmSync(SESSION_FILE, { force: true });
+  } catch {
+    /* ignore */
+  }
+}
 
 function sendJson(response, status, payload) {
   const body = JSON.stringify(payload);
@@ -293,11 +327,13 @@ function sessionOf(payload) {
 function adoptSession(session) {
   liveSession = session;
   modelCache = { key: '', at: 0, entries: [] };
+  if (session !== null) persistSessionFile(session);
 }
 
 function clearSession() {
   liveSession = null;
   modelCache = { key: '', at: 0, entries: [] };
+  forgetSessionFile();
 }
 
 /** Authenticated dashboard request. The device key outlives the access token. */
@@ -1041,6 +1077,9 @@ const adapterState = { registered: false, error: '' };
 function messageOf(error) {
   return error instanceof Error && error.message !== '' ? error.message : String(error);
 }
+
+// A restart keeps the provider usable before the page re-announces its session.
+liveSession = readSessionFile();
 
 export function apply(ctx) {
   const llmOf = () => {
