@@ -360,8 +360,16 @@ window.__ModuleLoader__.load({
 
     //#region model label
     // The picker renders this component for every provider's rows, so anything
-    // that is not an EZCloud model must look exactly like it did before.
+    // that is not an EZCloud model must look exactly like it did before. The
+    // decoration itself is fully optional: no session, no cached catalog, or any
+    // failure at all must degrade to the plain model name.
     const LABEL_PROVIDER = 'ezcloud';
+    const LABEL_CACHE_MS = 5 * 60 * 1000;
+    let labelCatalog = { at: 0, byId: new Map() };
+
+    function forgetLabelCatalog() {
+      labelCatalog = { at: 0, byId: new Map() };
+    }
 
     function labelText(model) {
       if (model !== null && typeof model === 'object') {
@@ -371,8 +379,152 @@ window.__ModuleLoader__.load({
       return '';
     }
 
+    // Named apart from the account dialog's `formatCredits`, which rounds for a
+    // balance readout; this one keeps the price exact and groups thousands.
+    function formatPriceE(value) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric) || numeric <= 0) return '';
+      if (numeric >= 1000) return String(Math.round(numeric)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+      return String(Math.round(numeric * 10000) / 10000);
+    }
+
+    /** `E 37,500/次` for per-call billing, `E 0.5/1M` for per-token billing. */
+    function priceBadge(entry) {
+      if (entry === null || typeof entry !== 'object') return '';
+      if (entry.quotaType === 1) {
+        const perMillion = formatPriceE(entry.credits);
+        return perMillion === '' ? '' : `E ${perMillion}/1M`;
+      }
+      const perCall = formatPriceE(entry.avgCredits);
+      return perCall === '' ? '' : `E ${perCall}/次`;
+    }
+
+    /** Anchor the hover card on the row, flipping below when the top is tight. */
+    function cardPosition(rect, height, viewportHeight) {
+      const above = rect.top - 8 - height;
+      if (above >= 8) return { left: rect.left, top: above };
+      const below = rect.bottom + 8;
+      const limit = Number.isFinite(viewportHeight) ? Math.max(8, viewportHeight - height - 8) : below;
+      return { left: rect.left, top: Math.min(below, limit) };
+    }
+
+    async function refreshLabelCatalog() {
+      const session = readSession();
+      if (session === null) return labelCatalog;
+      const now = Date.now();
+      if (labelCatalog.byId.size > 0 && now - labelCatalog.at < LABEL_CACHE_MS) return labelCatalog;
+      try {
+        const models = await loadModels(session, false);
+        const byId = new Map();
+        for (const model of models) {
+          if (model !== null && typeof model === 'object' && typeof model.id === 'string') byId.set(model.id, model);
+        }
+        labelCatalog = { at: now, byId };
+      } catch {
+        /* keep the previous snapshot: the badge is decoration, never a blocker */
+      }
+      return labelCatalog;
+    }
+
+    const LABEL_NAME_STYLE = { display: 'inline-flex', alignItems: 'center', gap: '0.4em', minWidth: 0 };
+    const LABEL_BADGE_STYLE = {
+      padding: '0 0.4em',
+      borderRadius: 4,
+      border: '1px solid currentColor',
+      fontSize: '0.78em',
+      lineHeight: '1.5',
+      opacity: 0.72,
+      whiteSpace: 'nowrap',
+    };
+    const LABEL_CARD_STYLE = {
+      position: 'fixed',
+      zIndex: 2147483000,
+      width: 320,
+      padding: '0.7em 0.8em',
+      borderRadius: 8,
+      background: 'var(--dsw-surface-raised, #1f2023)',
+      color: 'inherit',
+      boxShadow: '0 8px 28px rgba(0, 0, 0, 0.32)',
+      fontSize: '0.86em',
+      lineHeight: '1.55',
+      pointerEvents: 'none',
+    };
+
+    function cardLines(entry) {
+      const lines = [];
+      if (typeof entry.vendor === 'string' && entry.vendor !== '') lines.push(entry.vendor);
+      const size = [
+        Number.isFinite(entry.contextWindow) && entry.contextWindow > 0 ? `上下文 ${Math.round(entry.contextWindow / 1000)}K` : '',
+        Number.isFinite(entry.maxTokens) && entry.maxTokens > 0 ? `输出 ${Math.round(entry.maxTokens / 1000)}K` : '',
+      ]
+        .filter((part) => part !== '')
+        .join(' · ');
+      if (size !== '') lines.push(size);
+      const badge = priceBadge(entry);
+      if (badge !== '') lines.push(`${badge}（参考价）`);
+      return lines;
+    }
+
     function ModelLabel(props) {
-      return h('span', { 'data-ezagent-label': 'name' }, labelText(props?.model));
+      const provider = props?.provider;
+      const model = props?.model;
+      const owned = provider !== null && typeof provider === 'object' && provider.id === LABEL_PROVIDER;
+      const [catalog, setCatalog] = React.useState(labelCatalog);
+      const [card, setCard] = React.useState(null);
+
+      React.useEffect(() => {
+        if (!owned) return undefined;
+        let alive = true;
+        refreshLabelCatalog()
+          .then((next) => {
+            if (alive) setCatalog(next);
+          })
+          .catch(() => {});
+        return () => {
+          alive = false;
+        };
+      }, [owned]);
+
+      const name = labelText(model);
+      if (!owned) return h('span', { 'data-ezagent-label': 'name' }, name);
+
+      const entry = catalog !== null && typeof catalog === 'object' && catalog.byId instanceof Map ? catalog.byId.get(model?.id) : undefined;
+      if (entry === undefined) return h('span', { 'data-ezagent-label': 'name' }, name);
+
+      const badge = priceBadge(entry);
+      const row = h(
+        'span',
+        {
+          'data-ezagent-label': 'name',
+          style: LABEL_NAME_STYLE,
+          onMouseEnter: (event) => {
+            const rect = event?.currentTarget?.getBoundingClientRect?.();
+            if (rect === undefined || rect === null) return;
+            setCard(cardPosition(rect, 120, typeof window === 'undefined' ? 0 : window.innerHeight));
+          },
+          onMouseLeave: () => setCard(null),
+        },
+        h('span', { key: 'name', style: { overflow: 'hidden', textOverflow: 'ellipsis' } }, name),
+        badge === ''
+          ? null
+          : h('span', { key: 'badge', 'data-ezagent-badge': badge, style: LABEL_BADGE_STYLE }, badge),
+      );
+      if (card === null) return row;
+
+      return h(
+        React.Fragment,
+        null,
+        row,
+        h(
+          'div',
+          { 'data-ezagent-card': 'price', style: { ...LABEL_CARD_STYLE, left: card.left, top: card.top } },
+          h('div', { key: 'name', style: { fontWeight: 600, marginBottom: '0.3em' } }, name),
+          cardLines(entry).map((line, index) => h('div', { key: `line-${index}` }, line)),
+          typeof entry.description === 'string' && entry.description !== ''
+            ? h('div', { key: 'description', style: { marginTop: '0.45em', opacity: 0.74 } }, entry.description)
+            : null,
+        ),
+      );
     }
     //#endregion
 
@@ -1118,6 +1270,11 @@ window.__ModuleLoader__.load({
         loadModels,
         readPickerCatalog,
         labelText,
+        formatPriceE,
+        priceBadge,
+        cardPosition,
+        refreshLabelCatalog,
+        forgetLabelCatalog,
       },
     };
   },
