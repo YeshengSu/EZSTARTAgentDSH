@@ -502,7 +502,7 @@ window.__ModuleLoader__.load({
       const entry = catalog !== null && typeof catalog === 'object' && catalog.byId instanceof Map ? catalog.byId.get(model?.id) : undefined;
       if (entry === undefined) return h('span', { 'data-ezagent-label': 'name' }, name);
 
-      const badge = priceBadge(entry);
+      const badge = props?.placement === 'trigger' ? '' : priceBadge(entry);
       const row = h(
         'span',
         {
