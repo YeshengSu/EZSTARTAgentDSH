@@ -62,6 +62,8 @@ EZSTART Agent 的 DeepSeek Harness 插件：把 DSH 侧边栏品牌改成 **deep
 
 这两样都走 DSH 自己的扩展点（`reasoning.efforts` 与 `conversation.input.model.label`），不替换内置选择器，所以 DSH 更新选择器时会自动跟随。未登录、目录读取失败或价格字段缺失时，选择器退回只显示模型名，不会报错。
 
+> `conversation.input.model.label` 是单选席位，官方内置的 `DeepSeek-V4.1-Flash` 发布标记插件也占用它。本插件用更低的 priority 取得该席位，因此那个「1017」发布标记不再显示；其余非 EZCloud 模型渲染结果与原来一致（纯模型名）。
+
 ## 架构
 
 ```
