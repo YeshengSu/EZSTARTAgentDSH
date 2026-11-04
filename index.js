@@ -67,7 +67,7 @@ const LlmAdapter = LlmAdapterBase;
 const LlmError = LlmErrorClass;
 const attributionHeaders = attribution;
 
-const PLUGIN_VERSION = '1.4.2';
+const PLUGIN_VERSION = '1.5.0';
 const EZCLOUD_BASE_URL = 'https://api.ezstartai.com';
 const API_KEY_NAME = 'EZAgent';
 const ROUTE_PREFIX = '/ezagent/ezcloud';
