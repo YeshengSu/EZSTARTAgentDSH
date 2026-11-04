@@ -1261,9 +1261,11 @@ window.__ModuleLoader__.load({
         );
         // Every model row (and the trigger) is rendered through this child slot,
         // which is the only extension point the picker offers for row content.
+        // The official 1017 label occupies the same single seat at the default
+        // priority, so a lower priority is what makes this one the winner.
         ctx.slots.inject('conversation.input.model.label', () =>
           ctx.slots.register(
-            { name: 'conversation.input.model.label', id: 'ezagent-model-label', priority: 0 },
+            { name: 'conversation.input.model.label', id: 'ezagent-model-label', priority: -1 },
             ModelLabel,
           ),
         );
