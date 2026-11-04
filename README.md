@@ -26,14 +26,23 @@ EZSTART Agent 的 DeepSeek Harness 插件：把 DSH 侧边栏品牌改成 **deep
 
 ### 使用者：安装
 
-**方式一：图形界面（无需命令行）**
+**方式一：双击 install.bat（推荐，不需要命令行）**
+
+1. 把 `install.bat`、`install.ps1`、`EZAgent-<version>.tgz` 放在同一个文件夹。
+2. 完全退出 DeepSeek Harness（托盘图标也要退出）。
+3. 双击 `install.bat`，按窗口提示走完。
+4. 启动 DeepSeek Harness。
+
+窗口会停留到按任意键，报错可以直接截图反馈。
+
+**方式二：图形界面**
 
 1. 打开 DeepSeek Harness，左侧「插件」→「添加插件」。
 2. 粘贴 tgz 的绝对路径，例如 `C:\Users\you\Downloads\EZAgent-<version>.tgz`（把 `<version>` 换成实际版本号）。
 3. 需要时再按包名添加公开插件（见下方「公开插件」）。
 4. 重启 DeepSeek Harness。
 
-**方式二：安装脚本**
+**方式三：命令行**
 
 把 `install.ps1` 和 `EZAgent-<version>.tgz` 放同一目录，完全退出 DeepSeek Harness 后：
 
@@ -59,7 +68,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -LocalOnly
 npm run pack
 ```
 
-产出 `dist/`：`EZAgent-<version>.tgz` + `install.ps1`，把整个目录压缩发给使用者即可。`npm run pack` 每次先清空 `dist`，保证里面只有当前版本；tgz 内容由 `files` 白名单决定。
+产出 `dist/`：`EZAgent-<version>.tgz` + `install.ps1` + `install.bat`，把整个目录压缩发给使用者即可。`npm run pack` 每次先清空 `dist`，保证里面只有当前版本；tgz 内容由 `files` 白名单决定。
 
 ### 公开插件
 

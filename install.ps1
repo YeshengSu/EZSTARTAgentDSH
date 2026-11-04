@@ -53,7 +53,7 @@ if (-not $dsh) {
         }
     }
     Write-Host "  $step. 全部装完，重启 DeepSeek Harness"
-    exit 0
+    exit 2
 }
 
 # 兼容性检查用的是 dsh 命令自身的版本，不是桌面应用的版本
