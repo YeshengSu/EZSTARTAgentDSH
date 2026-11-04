@@ -1,6 +1,6 @@
 {
   "name": "EZAgent",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "private": true,
   "type": "module",
   "description": "EZCloud account bridge for DeepSeek Harness: sidebar sign-in, wallet and subscription status, and an EZCloud model provider.",

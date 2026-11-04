@@ -2,6 +2,7 @@ window.__ModuleLoader__.load({
   id: 'EZAgent',
   factory(require) {
     const React = require('react');
+    const ReactDOM = require('react-dom');
     const primitives = require('@deepseek-ai/dsh-client-ui-primitives');
     const Button = primitives.Button;
     const Input = primitives.Input;
@@ -438,13 +439,31 @@ window.__ModuleLoader__.load({
       return rows;
     }
 
-    /** Anchor the hover card on the row, flipping below when the top is tight. */
+    /**
+     * Anchor the card on the row, flipping below when the top is tight. The card
+     * is portalled to `document.body`, so these are plain viewport coordinates
+     * and no ancestor transform can shift them.
+     */
     function cardPosition(rect, height, viewportHeight) {
       const above = rect.top - 8 - height;
-      if (above >= 8) return { left: rect.left, top: above };
       const below = rect.bottom + 8;
       const limit = Number.isFinite(viewportHeight) ? Math.max(8, viewportHeight - height - 8) : below;
-      return { left: rect.left, top: Math.min(below, limit) };
+      const top = above >= 8 ? above : Math.min(below, limit);
+      return { left: rect.left, top };
+    }
+
+    /** Card box: fixed, above the row, and free to wrap despite the menu's nowrap. */
+    function cardBoxStyle(position) {
+      return {
+        ...LABEL_CARD_STYLE,
+        left: position.left,
+        top: position.top,
+        whiteSpace: 'normal',
+        wordBreak: 'break-word',
+        overflowWrap: 'anywhere',
+        maxHeight: '60vh',
+        overflow: 'hidden',
+      };
     }
 
     async function refreshLabelCatalog() {
@@ -542,9 +561,12 @@ window.__ModuleLoader__.load({
           'data-ezagent-label': 'name',
           style: LABEL_NAME_STYLE,
           onMouseEnter: (event) => {
-            const rect = event?.currentTarget?.getBoundingClientRect?.();
+            const node = event?.currentTarget;
+            const rect = node?.getBoundingClientRect?.();
             if (rect === undefined || rect === null) return;
-            setCard(cardPosition(rect, 120, typeof window === 'undefined' ? 0 : window.innerHeight));
+            const position = cardPosition(rect, 180, typeof window === 'undefined' ? 0 : window.innerHeight);
+            const width = typeof window === 'undefined' ? 0 : window.innerWidth;
+            setCard({ left: width > 0 ? Math.max(8, Math.min(position.left, width - 336)) : position.left, top: position.top });
           },
           onMouseLeave: () => setCard(null),
         },
@@ -554,26 +576,27 @@ window.__ModuleLoader__.load({
           : h('span', { key: 'badge', 'data-ezagent-badge': badge, style: LABEL_BADGE_STYLE }, badge),
       );
       if (card === null) return row;
+      if (card === null) return row;
 
-      return h(
-        React.Fragment,
-        null,
-        row,
-        h(
-          'div',
-          { 'data-ezagent-card': 'price', style: { ...LABEL_CARD_STYLE, left: card.left, top: card.top } },
-          h('div', { key: 'name', style: { fontWeight: 600, marginBottom: '0.3em' } }, name),
-          cardLines(entry).map((line, index) => h('div', { key: `size-${index}`, style: { opacity: 0.72 } }, line)),
-          cardRows(entry).map((row, index) =>
-            h(
-              'div',
-              { key: `row-${index}`, style: { display: 'flex', gap: '0.6em', marginTop: '0.35em' } },
-              h('span', { key: 'label', style: { minWidth: '4.2em', opacity: 0.66 } }, row.label),
-              h('span', { key: 'value', style: { flex: 1, wordBreak: 'break-word' } }, row.value),
-            ),
+      const cardNode = h(
+        'div',
+        { 'data-ezagent-card': 'price', style: cardBoxStyle(card) },
+        h('div', { key: 'name', style: { fontWeight: 600, marginBottom: '0.3em' } }, name),
+        cardLines(entry).map((line, index) => h('div', { key: 'size-' + index, style: { opacity: 0.72 } }, line)),
+        cardRows(entry).map((row, index) =>
+          h(
+            'div',
+            { key: 'row-' + index, style: { display: 'flex', gap: '0.6em', marginTop: '0.35em' } },
+            h('span', { key: 'label', style: { minWidth: '4.2em', opacity: 0.66 } }, row.label),
+            h('span', { key: 'value', style: { flex: 1, wordBreak: 'break-word' } }, row.value),
           ),
         ),
       );
+      // Portal to the body: inside the menu the card would inherit the panel's
+      // transform (which becomes the containing block for `position: fixed`)
+      // and the menu's `white-space: nowrap`.
+      const canPortal = typeof document !== 'undefined' && document.body !== undefined && typeof ReactDOM?.createPortal === 'function';
+      return h(React.Fragment, null, row, canPortal ? ReactDOM.createPortal(cardNode, document.body) : cardNode);
     }
     //#endregion
 
@@ -1326,6 +1349,7 @@ window.__ModuleLoader__.load({
         descriptionText,
         cardRows,
         cardPosition,
+        cardBoxStyle,
         refreshLabelCatalog,
         forgetLabelCatalog,
       },
