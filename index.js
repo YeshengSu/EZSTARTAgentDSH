@@ -67,7 +67,7 @@ const LlmAdapter = LlmAdapterBase;
 const LlmError = LlmErrorClass;
 const attributionHeaders = attribution;
 
-const PLUGIN_VERSION = '1.4.1';
+const PLUGIN_VERSION = '1.4.2';
 const EZCLOUD_BASE_URL = 'https://api.ezstartai.com';
 const API_KEY_NAME = 'EZAgent';
 const ROUTE_PREFIX = '/ezagent/ezcloud';
@@ -1130,6 +1130,9 @@ export function apply(ctx) {
   };
 
   const registerProvider = () => {
+    // `ctx.inject` and the retry timer can both fire; a second registration
+    // would be refused as DUPLICATE_ADAPTER and would overwrite a healthy state.
+    if (adapterState.registered && adapterState.error === '') return true;
     const llm = llmOf();
     if (llm === undefined) {
       adapterState.registered = false;
@@ -1137,12 +1140,22 @@ export function apply(ctx) {
       return false;
     }
     try {
-      llm.registerAdapter([{ id: PROVIDER_ID, name: PROVIDER_NAME }], new EzCloudAdapter(ctx));
+      // `registerAdapter(providers, adapter)`: providers are the route ids the
+      // adapter serves, and `providerInfo(id)` must echo the same id back.
+      llm.registerAdapter([PROVIDER_ID], new EzCloudAdapter(ctx));
       adapterState.registered = true;
       adapterState.error = '';
       trace('adapter registered');
       return true;
     } catch (error) {
+      if (messageOf(error).includes('already registered')) {
+        // Another fiber holds the route; ours is not the owner but the provider
+        // is live, which is what the picker cares about.
+        adapterState.registered = true;
+        adapterState.error = '';
+        trace('adapter already registered by another fiber');
+        return true;
+      }
       adapterState.registered = false;
       adapterState.error = messageOf(error);
       trace(`adapter registration failed: ${adapterState.error}`);
@@ -1278,11 +1291,21 @@ export function apply(ctx) {
             // Health probe: lets the account panel explain a missing model
             // group instead of silently showing an empty picker.
             if (pathname === `${ROUTE_PREFIX}/diagnostics`) {
+              let registeredProviders = [];
+              try {
+                const llm = llmOf();
+                if (llm !== undefined && typeof llm.listProviders === 'function') {
+                  registeredProviders = llm.listProviders().map((provider) => provider.id);
+                }
+              } catch {
+                /* the registry is a best-effort probe */
+              }
               sendJson(response, 200, {
                 ok: true,
                 plugin: PLUGIN_VERSION,
                 provider: PROVIDER_ID,
                 registered: adapterState.registered,
+                registeredProviders,
                 adapterError: adapterState.error,
                 llmAvailable: llmOf() !== undefined,
                 signedIn: liveSession !== null,

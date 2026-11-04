@@ -124,6 +124,10 @@ ctx.llm.registerAdapter([{ id: 'ezcloud', name: 'EZCloud' }], new EzCloudAdapter
 
 先看宿主端诊断日志 `%USERPROFILE%\.dsh\ezagent-diag.log`：`adapter registered` 表示 provider 已注册，`listModels: N models` 表示目录已返回 N 个模型（N 为 0 时是会话或接口问题）。日志超过 32 KB 会自动清空。
 
+> 1.4.2 修复：此前注册使用了 `[{ id, name }]`，而 `llm.registerAdapter(providers, adapter)` 接收的是 provider **id 字符串数组**，宿主因此每次都抛 `adapter metadata for provider "[object Object]" ...`，provider 从未进入注册表，选择器自然没有分组。升级后日志里应出现 `adapter registered`。
+
+宿主的路由/SDK 层与账号无关的部分仍可用 `/ezagent/ezcloud/diagnostics` 自查：`registered` 为 provider 是否注册、`registeredProviders` 为注册表里实际的 provider id 列表、`adapterError` 为失败原因。
+
 
 宿主的模型分组依赖登录会话。确认账号弹窗能正常显示余额（说明会话有效），必要时点开弹窗里的「刷新模型」；仍不出现时重启 DSH 再试。
 
