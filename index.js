@@ -25,7 +25,7 @@
  * harness present we reuse its `LlmAdapter`/`LlmError` identity, and otherwise
  * the local definitions below keep the provider contract intact.
  */
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -67,7 +67,7 @@ const LlmAdapter = LlmAdapterBase;
 const LlmError = LlmErrorClass;
 const attributionHeaders = attribution;
 
-const PLUGIN_VERSION = '1.4.0';
+const PLUGIN_VERSION = '1.4.1';
 const EZCLOUD_BASE_URL = 'https://api.ezstartai.com';
 const API_KEY_NAME = 'EZAgent';
 const ROUTE_PREFIX = '/ezagent/ezcloud';
@@ -92,6 +92,27 @@ let pricingCache = { at: 0, rows: [], vendors: new Map() };
 
 const DSH_HOME = process.env.DSH_HOME !== undefined && process.env.DSH_HOME !== '' ? process.env.DSH_HOME : join(homedir(), '.dsh');
 const SESSION_FILE = join(DSH_HOME, 'ezagent-session.json');
+const DIAG_FILE = join(DSH_HOME, 'ezagent-diag.log');
+const DIAG_LIMIT_BYTES = 32 * 1024;
+
+/**
+ * Append one bounded diagnostic line. Support for "the picker shows nothing"
+ * needs to know whether the provider registered and what the catalog returned,
+ * and neither is observable from the page.
+ */
+function trace(line) {
+  try {
+    mkdirSync(DSH_HOME, { recursive: true });
+    try {
+      if (statSync(DIAG_FILE).size > DIAG_LIMIT_BYTES) writeFileSync(DIAG_FILE, '');
+    } catch {
+      /* first write, or the file is unreadable */
+    }
+    writeFileSync(DIAG_FILE, `${new Date().toISOString()} ${line}\n`, { encoding: 'utf8', flag: 'a', mode: 0o600 });
+  } catch {
+    /* diagnostics are optional */
+  }
+}
 
 /** Mirror the announced session so the model picker works before the page re-syncs. */
 function persistSessionFile(session) {
@@ -388,12 +409,23 @@ async function fetchPricing() {
   return pricingCache;
 }
 
-/** Model ids the signed-in account's groups may call over the OpenAI-compatible API. */
+/**
+ * Model ids the signed-in account's groups may call over the OpenAI-compatible
+ * API. The deployment route is `/api/user/models`; older builds exposed the same
+ * handler below `/self`, so both are tried before falling back to pricing rows.
+ */
 async function fetchUsableModels(session) {
-  const body = await authedJson('/api/user/self/models', session, '无法读取账号可用模型');
-  const data = body.data;
-  if (!Array.isArray(data)) return null;
-  return data.filter((name) => typeof name === 'string' && name !== '');
+  for (const path of ['/api/user/models', '/api/user/self/models']) {
+    try {
+      const body = await authedJson(path, session, '无法读取账号可用模型');
+      const data = body.data;
+      if (!Array.isArray(data)) return null;
+      return data.filter((name) => typeof name === 'string' && name !== '');
+    } catch {
+      // try the next spelling; the caller falls back to the pricing catalog
+    }
+  }
+  return null;
 }
 
 const CONTEXT_HINTS = [
@@ -787,9 +819,13 @@ class EzCloudAdapter extends LlmAdapter {
 
   async listModels(provider) {
     const session = liveSession;
-    if (session === null) return [];
+    if (session === null) {
+      trace('listModels: no session, returning 0 models');
+      return [];
+    }
     try {
       const entries = await modelCatalog(session);
+      trace(`listModels: ${entries.length} models (group=${session.group === '' ? '-' : session.group})`);
       return entries.map((entry) => ({
         provider,
         id: entry.id,
@@ -797,9 +833,10 @@ class EzCloudAdapter extends LlmAdapter {
         ...(entry.summary === '' ? {} : { description: entry.summary }),
         inputModalities: entry.input,
       }));
-    } catch {
+    } catch (error) {
       // A catalog read failure must not break the model picker; the account
       // dialog surfaces the same error with actionable wording.
+      trace(`listModels failed: ${messageOf(error)}`);
       return [];
     }
   }
@@ -1080,6 +1117,7 @@ function messageOf(error) {
 
 // A restart keeps the provider usable before the page re-announces its session.
 liveSession = readSessionFile();
+trace(`startup: session=${liveSession === null ? 'none' : 'restored'}`);
 
 export function apply(ctx) {
   const llmOf = () => {
@@ -1102,10 +1140,12 @@ export function apply(ctx) {
       llm.registerAdapter([{ id: PROVIDER_ID, name: PROVIDER_NAME }], new EzCloudAdapter(ctx));
       adapterState.registered = true;
       adapterState.error = '';
+      trace('adapter registered');
       return true;
     } catch (error) {
       adapterState.registered = false;
       adapterState.error = messageOf(error);
+      trace(`adapter registration failed: ${adapterState.error}`);
       return false;
     }
   };
@@ -1120,6 +1160,14 @@ export function apply(ctx) {
     } catch {
       /* keep the HTTP routes usable even without model registration */
     }
+
+    let attempts = 0;
+    const timer = setInterval(() => {
+      attempts += 1;
+      if (registerProvider() || attempts >= 30) clearInterval(timer);
+    }, 1000);
+    if (typeof timer.unref === 'function') timer.unref();
+    ctx.effect(() => () => clearInterval(timer));
   }
 
   const announce = () => {
@@ -1174,9 +1222,11 @@ export function apply(ctx) {
               const session = normalizeSession(payload.session);
               if (session === null) {
                 clearSession();
+                trace('sync: cleared session');
                 sendJson(response, 200, { ok: true, signedIn: false });
               } else {
                 adoptSession(session);
+                trace(`sync: adopted session (group=${session.group === '' ? '-' : session.group}, deviceKey=${session.deviceKey === '' ? 'no' : 'yes'})`);
                 announce();
                 sendJson(response, 200, { ok: true, signedIn: true });
               }

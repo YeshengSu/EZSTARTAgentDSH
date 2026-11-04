@@ -16,7 +16,7 @@ EZSTART Agent 的 DeepSeek Harness 插件：把 DSH 侧边栏品牌改成 **deep
 - **EZCloud 模型接入**：宿主端注册 `ezcloud` provider，`listModels()` 只在该账号登录后返回其可用模型（来自 `/api/user/self/models`，并与 `/api/pricing` 合并出厂商、上下文、输入模态、单价）。未登录时返回空列表，DSH 会把空分组从选择器里过滤掉，因此**不登录就看不到**。
 - **流式对话**：`POST /v1/chat/completions`（OpenAI 兼容，SSE），支持文本增量、推理增量、工具调用、用量统计与错误码映射。
 - **账户详情**：钱包余额（E 额度）、已用额度、请求数、订阅套餐（名称/等级/到期时间）、三档额度进度条、计费方式切换、密钥复制、退出登录。
-- **弹窗内选模型**：账号弹窗列出账号可用模型，点击任一行即把当前会话切到该模型（调用 DSH 会话的模型选择接口），并显示模型选择器里实际可选的 EZCloud 模型数量。
+- **模型只在选择器里选**：账号弹窗只读展示该账号可用的模型，并显示 DSH 模型选择器当前实际暴露的 EZCloud 模型数量；真正的模型切换统一在输入框的模型选择器里完成。
 - **登录态持久化**：会话存在浏览器 `localStorage`，刷新页面或重启应用后由页面自动向宿主端同步，模型分组随之恢复。
 - **品牌更名**：侧边栏 wordmark 显示为 `deepseek EZAgent`。
 
@@ -121,6 +121,9 @@ ctx.llm.registerAdapter([{ id: 'ezcloud', name: 'EZCloud' }], new EzCloudAdapter
 ## 常见问题
 
 **登录后模型选择器里没有 EZCloud**
+
+先看宿主端诊断日志 `%USERPROFILE%\.dsh\ezagent-diag.log`：`adapter registered` 表示 provider 已注册，`listModels: N models` 表示目录已返回 N 个模型（N 为 0 时是会话或接口问题）。日志超过 32 KB 会自动清空。
+
 
 宿主的模型分组依赖登录会话。确认账号弹窗能正常显示余额（说明会话有效），必要时点开弹窗里的「刷新模型」；仍不出现时重启 DSH 再试。
 

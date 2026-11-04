@@ -125,11 +125,6 @@ window.__ModuleLoader__.load({
       modelsOff: 'DSH 模型选择器未接入 EZCloud',
       pickerReady: '模型选择器已加载 {n} 个 EZCloud 模型，点击下方即可切换。',
       pickerMissing: '模型选择器未显示 EZCloud 模型',
-      select: '使用',
-      selected: '使用中',
-      errorSelectUnavailable: '当前环境不支持切换模型',
-      errorSelectNoSession: '没有找到当前会话',
-      errorSelectFailed: '切换模型失败',
       modelsLoading: '读取模型…',
       modelContext: '{n} 上下文',
       modelImage: '支持图片',
@@ -196,11 +191,6 @@ window.__ModuleLoader__.load({
       modelsOff: 'The DSH model picker is not connected to EZCloud',
       pickerReady: 'The model picker exposes {n} EZCloud models; click one below to switch.',
       pickerMissing: 'EZCloud is missing from the model picker',
-      select: 'Use',
-      selected: 'In use',
-      errorSelectUnavailable: 'This build cannot switch models',
-      errorSelectNoSession: 'No active conversation found',
-      errorSelectFailed: 'Could not switch the model',
       modelsLoading: 'Reading models…',
       modelContext: '{n} context',
       modelImage: 'image input',
@@ -368,33 +358,10 @@ window.__ModuleLoader__.load({
       return preference;
     }
 
-    //#region DSH model selection
-    // The plugin's account dialog can hand a model to the conversation: the
-    // client session controller owns the selection, and the `uiSession`
-    // service exposes the Session the composer is currently bound to.
+    //#region DSH model catalog probe
+    // The picker is the only place a model is chosen; the account dialog just
+    // reports what the picker currently exposes so a missing group is visible.
     let appCtx = null;
-
-    function currentSessionId() {
-      try {
-        const ui = typeof appCtx?.get === 'function' ? appCtx.get('uiSession') : undefined;
-        if (ui === null || ui === undefined) return '';
-        // `adapter.current` is the renderer-facing source other UI plugins read;
-        // its snapshot carries the Session identity in `key`.
-        const source = ui.adapter === undefined ? undefined : ui.adapter.current;
-        if (source !== undefined && source !== null && typeof source.getSnapshot === 'function') {
-          const snapshot = source.getSnapshot();
-          const id = snapshot === null || snapshot === undefined ? undefined : snapshot.key;
-          if (typeof id === 'string' && id !== '') return id;
-        }
-        const value = ui.current === null || ui.current === undefined ? undefined : ui.current.value;
-        if (value === null || value === undefined) return '';
-        if (typeof value.key === 'string' && value.key !== '') return value.key;
-        const id = value.props === undefined ? undefined : value.props.sessionId;
-        return typeof id === 'string' ? id : '';
-      } catch {
-        return '';
-      }
-    }
 
     function sessionRemote() {
       try {
@@ -425,21 +392,6 @@ window.__ModuleLoader__.load({
         defaultProvider: typeof fallback.provider === 'string' ? fallback.provider : '',
         defaultModel: typeof fallback.model === 'string' ? fallback.model : '',
       };
-    }
-
-    /** Route the current conversation to one EZCloud model. */
-    async function selectEzcloudModel(modelId) {
-      const t = texts();
-      const remote = sessionRemote();
-      if (remote === undefined || typeof remote.selectModel !== 'function') throw new Error(t.errorSelectUnavailable);
-      const sessionId = currentSessionId();
-      if (sessionId === '') throw new Error(t.errorSelectNoSession);
-      const result = await remote.selectModel({ sessionId, provider: 'ezcloud', model: modelId });
-      if (result === null || typeof result !== 'object' || result.ok !== true) {
-        const message = result !== null && typeof result === 'object' && result.error !== null && typeof result.error === 'object' ? result.error.message : '';
-        throw new Error(typeof message === 'string' && message.trim() !== '' ? message.trim() : t.errorSelectFailed);
-      }
-      return true;
     }
     //#endregion
 
@@ -553,12 +505,6 @@ window.__ModuleLoader__.load({
 .ezagent-models{display:flex;flex-direction:column;max-height:190px;overflow:auto;}
 .ezagent-model{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid color-mix(in srgb,currentColor 7%,transparent);}
 .ezagent-model:last-child{border-bottom:0;}
-.ezagent-model{width:100%;border-left:0;border-right:0;border-top:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;border-radius:0;}
-.ezagent-model:hover:not(:disabled){background:color-mix(in srgb,currentColor 6%,transparent);}
-.ezagent-model:disabled{cursor:default;}
-.ezagent-model[data-active="true"] .ezagent-model-name{color:#4d6bfe;font-weight:600;}
-.ezagent-model-action{flex:none;font-size:11px;color:#4d6bfe;}
-.ezagent-model:disabled .ezagent-model-action{color:color-mix(in srgb,currentColor 45%,transparent);}
 .ezagent-model-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;}
 .ezagent-model-meta{flex:none;font-size:11px;color:color-mix(in srgb,currentColor 50%,transparent);}
 .ezagent-link{color:#4d6bfe;font-size:12px;text-decoration:none;}
@@ -734,9 +680,6 @@ window.__ModuleLoader__.load({
       const [models, setModels] = React.useState(null);
       const [host, setHost] = React.useState(null);
       const [catalog, setCatalog] = React.useState(null);
-      const [activeModel, setActiveModel] = React.useState('');
-      const [selecting, setSelecting] = React.useState('');
-      const [selectError, setSelectError] = React.useState('');
       const [loading, setLoading] = React.useState(false);
       const [modelsLoading, setModelsLoading] = React.useState(false);
       const [error, setError] = React.useState('');
@@ -776,27 +719,10 @@ window.__ModuleLoader__.load({
             picker = await readPickerCatalog();
           }
           setCatalog(picker);
-          if (picker !== null && picker.defaultProvider === 'ezcloud' && picker.defaultModel !== '') {
-            setActiveModel(picker.defaultModel);
-          }
         } catch (failure) {
           setModelsError(failure instanceof Error && failure.message !== '' ? failure.message : t.errorModels);
         } finally {
           setModelsLoading(false);
-        }
-      };
-
-      const chooseModel = async (modelId) => {
-        if (selecting !== '') return;
-        setSelecting(modelId);
-        setSelectError('');
-        try {
-          await selectEzcloudModel(modelId);
-          setActiveModel(modelId);
-        } catch (failure) {
-          setSelectError(failure instanceof Error && failure.message !== '' ? failure.message : t.errorSelectFailed);
-        } finally {
-          setSelecting('');
         }
       };
 
@@ -1010,7 +936,6 @@ window.__ModuleLoader__.load({
                             ? t.pickerReady.replace('{n}', String(catalog.count))
                             : `${t.pickerMissing}${catalog.message === '' ? '' : ` · ${catalog.message}`}`,
                         ),
-                    selectError === '' ? null : h('p', { className: 'ezagent-error' }, selectError),
                     h(
                       'div',
                       { className: 'ezagent-models' },
@@ -1023,22 +948,11 @@ window.__ModuleLoader__.load({
                         ]
                           .filter((part) => part !== '')
                           .join(' · ');
-                        const active = activeModel === model.id;
-                        const busy = selecting === model.id;
                         return h(
-                          'button',
-                          {
-                            type: 'button',
-                            className: 'ezagent-model',
-                            key: model.id,
-                            title: description.slice(0, 400),
-                            'data-active': active ? 'true' : 'false',
-                            disabled: selecting !== '',
-                            onClick: () => chooseModel(model.id),
-                          },
+                          'div',
+                          { className: 'ezagent-model', key: model.id, title: description.slice(0, 400) },
                           h('span', { className: 'ezagent-model-name' }, model.id),
                           h('span', { className: 'ezagent-model-meta' }, meta),
-                          h('span', { className: 'ezagent-model-action' }, busy ? t.loading : active ? t.selected : t.select),
                         );
                       }),
                     ),
@@ -1176,9 +1090,7 @@ window.__ModuleLoader__.load({
         syncHost,
         loadSnapshot,
         loadModels,
-        currentSessionId,
         readPickerCatalog,
-        selectEzcloudModel,
       },
     };
   },
