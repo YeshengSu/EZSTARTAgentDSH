@@ -30,7 +30,7 @@ EZSTART Agent 的 DeepSeek Harness 插件：把 DSH 侧边栏品牌改成 **deep
 
 1. 把 `install.bat`、`install.ps1`、`EZAgent-<version>.tgz` 放在同一个文件夹。
 2. 完全退出 DeepSeek Harness（托盘图标也要退出）。
-3. 双击 `install.bat`，按窗口提示走完。
+3. 双击 `install.bat`，按窗口提示走完（窗口提示为英文）。
 4. 启动 DeepSeek Harness。
 
 窗口会停留到按任意键，报错可以直接截图反馈。
