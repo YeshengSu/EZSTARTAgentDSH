@@ -366,6 +366,7 @@ window.__ModuleLoader__.load({
     // failure at all must degrade to the plain model name.
     const LABEL_PROVIDER = 'ezcloud';
     const LABEL_CACHE_MS = 5 * 60 * 1000;
+    const CARD_WIDTH = 340;
     let labelCatalog = { at: 0, byId: new Map() };
     /** One request serves every row that mounts while it is in flight. */
     let labelCatalogPending = null;
@@ -440,16 +441,35 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Anchor the card on the row, flipping below when the top is tight. The card
-     * is portalled to `document.body`, so these are plain viewport coordinates
-     * and no ancestor transform can shift them.
+     * Card anchor. The card is portalled to `document.body`, so these are plain
+     * viewport coordinates: beside the menu on the right, mirrored to the left
+     * when the row sits near the window edge, and flipped below the row when
+     * there is no room above.
      */
-    function cardPosition(rect, height, viewportHeight) {
+    function cardPosition(rect, height, viewportHeight, viewportWidth, width) {
       const above = rect.top - 8 - height;
       const below = rect.bottom + 8;
       const limit = Number.isFinite(viewportHeight) ? Math.max(8, viewportHeight - height - 8) : below;
       const top = above >= 8 ? above : Math.min(below, limit);
-      return { left: rect.left, top };
+      const left = Number.isFinite(viewportWidth) && Number.isFinite(width)
+        ? tipLeft(rect, width, viewportWidth)
+        : rect.left;
+      return { left, top };
+    }
+
+    /**
+     * Horizontal anchor: beside the menu on the right, falling back to its left,
+     * and clamped inside the viewport when neither side fits.
+     */
+    function tipLeft(rect, width, viewportWidth) {
+      const margin = 8;
+      const maxLeft = Math.max(margin, viewportWidth - width - margin);
+      let left = rect.right + margin;
+      if (left + width > viewportWidth - margin) {
+        const mirrored = rect.left - width - margin;
+        left = mirrored >= margin ? mirrored : maxLeft;
+      }
+      return Math.max(margin, Math.min(left, maxLeft));
     }
 
     /** Card box: fixed, above the row, and free to wrap despite the menu's nowrap. */
@@ -505,7 +525,8 @@ window.__ModuleLoader__.load({
     const LABEL_CARD_STYLE = {
       position: 'fixed',
       zIndex: 2147483000,
-      width: 320,
+      width: CARD_WIDTH,
+      boxSizing: 'border-box',
       padding: '0.7em 0.8em',
       borderRadius: 8,
       background: 'var(--dsw-surface-raised, #1f2023)',
@@ -564,9 +585,15 @@ window.__ModuleLoader__.load({
             const node = event?.currentTarget;
             const rect = node?.getBoundingClientRect?.();
             if (rect === undefined || rect === null) return;
-            const position = cardPosition(rect, 180, typeof window === 'undefined' ? 0 : window.innerHeight);
-            const width = typeof window === 'undefined' ? 0 : window.innerWidth;
-            setCard({ left: width > 0 ? Math.max(8, Math.min(position.left, width - 336)) : position.left, top: position.top });
+            setCard(
+              cardPosition(
+                rect,
+                180,
+                typeof window === 'undefined' ? 0 : window.innerHeight,
+                typeof window === 'undefined' ? 0 : window.innerWidth,
+                CARD_WIDTH,
+              ),
+            );
           },
           onMouseLeave: () => setCard(null),
         },
@@ -1349,6 +1376,7 @@ window.__ModuleLoader__.load({
         descriptionText,
         cardRows,
         cardPosition,
+        tipLeft,
         cardBoxStyle,
         refreshLabelCatalog,
         forgetLabelCatalog,
