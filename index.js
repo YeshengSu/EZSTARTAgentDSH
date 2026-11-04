@@ -553,6 +553,9 @@ async function modelCatalog(session) {
       maxTokens: maxTokensFor(contextWindow, description),
       quotaType: Number(row.quota_type) === 1 ? 1 : 0,
       credits: Number(row.credits) > 0 ? Number(row.credits) : 0,
+      avgCredits: Number(row.avg_credits) > 0 ? Number(row.avg_credits) : 0,
+      completionRatio: Number(row.completion_ratio) > 0 ? Number(row.completion_ratio) : 0,
+      billingMode: typeof row.billing_mode === 'string' ? row.billing_mode : '',
     });
   }
 
@@ -1290,6 +1293,10 @@ export function apply(ctx) {
                   contextWindow: entry.contextWindow,
                   quotaType: entry.quotaType,
                   credits: entry.credits,
+                  avgCredits: entry.avgCredits,
+                  completionRatio: entry.completionRatio,
+                  billingMode: entry.billingMode,
+                  maxTokens: entry.maxTokens,
                 })),
                 fetchedAt: Date.now(),
               });
