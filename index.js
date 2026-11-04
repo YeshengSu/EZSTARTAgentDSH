@@ -92,6 +92,7 @@ const REASONING_EFFORTS = [
   { id: 'high', name: '高' },
 ];
 const DEFAULT_REASONING_EFFORT = 'high';
+const REASONING_EFFORT_IDS = new Set(REASONING_EFFORTS.map((effort) => effort.id));
 const IMAGE_PIXEL_BUDGET = 4194304;
 const IMAGE_BYTE_BUDGET = 1048576;
 
@@ -1026,6 +1027,11 @@ class EzCloudAdapter extends LlmAdapter {
     if (Number.isSafeInteger(options.maxTokens) && options.maxTokens > 0) body.max_tokens = options.maxTokens;
     if (typeof options.temperature === 'number') body.temperature = options.temperature;
     if (Array.isArray(options.stop) && options.stop.length > 0) body.stop = options.stop;
+    // Anything outside the accepted set makes the gateway reroute to another
+    // model silently, so an unknown value is dropped instead of forwarded.
+    if (typeof options.reasoningEffort === 'string' && REASONING_EFFORT_IDS.has(options.reasoningEffort)) {
+      body.reasoning_effort = options.reasoningEffort;
+    }
     if (Array.isArray(options.tools) && options.tools.length > 0) {
       body.tools = options.tools
         .filter((tool) => tool !== null && typeof tool === 'object' && typeof tool.name === 'string' && tool.name !== '')
