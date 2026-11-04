@@ -129,6 +129,17 @@ window.__ModuleLoader__.load({
       modelsLoading: '读取模型…',
       modelContext: '{n} 上下文',
       modelImage: '支持图片',
+      modelVendor: '供应商',
+      modelIntro: '模型介绍',
+      pricePerCall: '按次计费',
+      priceInput: '输入',
+      priceOutput: '输出',
+      priceCacheRead: '缓存读取',
+      priceCacheWrite: '缓存写入',
+      priceUnit: 'E / 1M tokens',
+      priceUnitLabel: '单位',
+      modelContextLine: '上下文 {n}K',
+      modelMaxOutputLine: '最大输出 {n}K',
     };
 
     const EN = {
@@ -195,6 +206,17 @@ window.__ModuleLoader__.load({
       modelsLoading: 'Reading models…',
       modelContext: '{n} context',
       modelImage: 'image input',
+      modelVendor: 'Vendor',
+      modelIntro: 'Model introduction',
+      pricePerCall: 'Per request',
+      priceInput: 'Input',
+      priceOutput: 'Output',
+      priceCacheRead: 'Cache read',
+      priceCacheWrite: 'Cache write',
+      priceUnit: 'E / 1M tokens',
+      priceUnitLabel: 'Unit',
+      modelContextLine: 'Context {n}K',
+      modelMaxOutputLine: 'Max output {n}K',
     };
 
     const PREFERENCES = ['subscription_first', 'wallet_first', 'subscription_only', 'wallet_only'];
@@ -416,15 +438,16 @@ window.__ModuleLoader__.load({
     /** Everything the hover card shows, in display order. */
     function cardRows(entry) {
       if (entry === null || typeof entry !== 'object') return [];
+      const t = texts();
       const rows = [];
-      if (typeof entry.vendor === 'string' && entry.vendor !== '') rows.push({ label: '供应商', value: entry.vendor });
+      if (typeof entry.vendor === 'string' && entry.vendor !== '') rows.push({ label: t.modelVendor, value: entry.vendor });
       const intro = descriptionText(entry.description);
       // The card ignores pointer events so the row stays clickable, which means
       // a long description can never be scrolled: clip it instead.
-      if (intro !== '') rows.push({ label: '模型介绍', value: intro.length > 220 ? `${intro.slice(0, 219)}…` : intro });
+      if (intro !== '') rows.push({ label: t.modelIntro, value: intro.length > 220 ? `${intro.slice(0, 219)}…` : intro });
       if (entry.quotaType === 1) {
         const perCall = formatPriceE(entry.avgCredits);
-        rows.push({ label: '计费', value: `按次计费 · E ${perCall === '' ? '—' : perCall}` });
+        rows.push({ label: t.pricePerCall, value: `E ${perCall === '' ? '—' : perCall}` });
         return rows;
       }
       if (entry.inputE === null && entry.outputE === null) return rows;
@@ -432,11 +455,11 @@ window.__ModuleLoader__.load({
         const text = formatPriceE(value);
         return { label, value: text === '' ? '—' : `E ${text}` };
       };
-      rows.push(cell('输入', entry.inputE));
-      rows.push(cell('输出', entry.outputE));
-      rows.push(cell('缓存读取', entry.cacheReadE));
-      rows.push(cell('缓存写入', entry.cacheWriteE));
-      rows.push({ label: '单位', value: 'E / 1M tokens' });
+      rows.push(cell(t.priceInput, entry.inputE));
+      rows.push(cell(t.priceOutput, entry.outputE));
+      rows.push(cell(t.priceCacheRead, entry.cacheReadE));
+      rows.push(cell(t.priceCacheWrite, entry.cacheWriteE));
+      rows.push({ label: t.priceUnitLabel, value: t.priceUnit });
       return rows;
     }
 
@@ -522,10 +545,15 @@ window.__ModuleLoader__.load({
     };
 
     function cardLines(entry) {
+      const t = texts();
       const lines = [];
       const size = [
-        Number.isFinite(entry.contextWindow) && entry.contextWindow > 0 ? `上下文 ${Math.round(entry.contextWindow / 1000)}K` : '',
-        Number.isFinite(entry.maxTokens) && entry.maxTokens > 0 ? `输出 ${Math.round(entry.maxTokens / 1000)}K` : '',
+        Number.isFinite(entry.contextWindow) && entry.contextWindow > 0
+          ? t.modelContextLine.replace('{n}', formatPriceE(Math.round(entry.contextWindow / 1000)))
+          : '',
+        Number.isFinite(entry.maxTokens) && entry.maxTokens > 0
+          ? t.modelMaxOutputLine.replace('{n}', formatPriceE(Math.round(entry.maxTokens / 1000)))
+          : '',
       ]
         .filter((part) => part !== '')
         .join(' · ');
@@ -1353,6 +1381,7 @@ window.__ModuleLoader__.load({
         priceBadge,
         descriptionText,
         cardRows,
+        cardLines,
         cardBox,
         cardBoxStyle,
         refreshLabelCatalog,
