@@ -358,6 +358,24 @@ window.__ModuleLoader__.load({
       return preference;
     }
 
+    //#region model label
+    // The picker renders this component for every provider's rows, so anything
+    // that is not an EZCloud model must look exactly like it did before.
+    const LABEL_PROVIDER = 'ezcloud';
+
+    function labelText(model) {
+      if (model !== null && typeof model === 'object') {
+        if (typeof model.name === 'string' && model.name !== '') return model.name;
+        if (typeof model.id === 'string') return model.id;
+      }
+      return '';
+    }
+
+    function ModelLabel(props) {
+      return h('span', { 'data-ezagent-label': 'name' }, labelText(props?.model));
+    }
+    //#endregion
+
     //#region DSH model catalog probe
     // The picker is the only place a model is chosen; the account dialog just
     // reports what the picker currently exposes so a missing group is visible.
@@ -1078,6 +1096,14 @@ window.__ModuleLoader__.load({
             LoginEntry,
           ),
         );
+        // Every model row (and the trigger) is rendered through this child slot,
+        // which is the only extension point the picker offers for row content.
+        ctx.slots.inject('conversation.input.model.label', () =>
+          ctx.slots.register(
+            { name: 'conversation.input.model.label', id: 'ezagent-model-label', priority: 0 },
+            ModelLabel,
+          ),
+        );
       },
       // Public surface for host-side or scripted use; the UI above is the
       // primary entry point.
@@ -1091,6 +1117,7 @@ window.__ModuleLoader__.load({
         loadSnapshot,
         loadModels,
         readPickerCatalog,
+        labelText,
       },
     };
   },
