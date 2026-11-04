@@ -417,7 +417,9 @@ window.__ModuleLoader__.load({
       const rows = [];
       if (typeof entry.vendor === 'string' && entry.vendor !== '') rows.push({ label: '供应商', value: entry.vendor });
       const intro = descriptionText(entry.description);
-      if (intro !== '') rows.push({ label: '模型介绍', value: intro });
+      // The card ignores pointer events so the row stays clickable, which means
+      // a long description can never be scrolled: clip it instead.
+      if (intro !== '') rows.push({ label: '模型介绍', value: intro.length > 220 ? `${intro.slice(0, 219)}…` : intro });
       if (entry.quotaType === 1) {
         const perCall = formatPriceE(entry.avgCredits);
         rows.push({ label: '计费', value: `按次计费 · E ${perCall === '' ? '—' : perCall}` });
