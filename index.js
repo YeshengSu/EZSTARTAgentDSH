@@ -67,7 +67,7 @@ const LlmAdapter = LlmAdapterBase;
 const LlmError = LlmErrorClass;
 const attributionHeaders = attribution;
 
-const PLUGIN_VERSION = '1.5.0';
+const PLUGIN_VERSION = '1.5.1';
 const EZCLOUD_BASE_URL = 'https://api.ezstartai.com';
 const API_KEY_NAME = 'EZAgent';
 const ROUTE_PREFIX = '/ezagent/ezcloud';
@@ -511,6 +511,66 @@ function summarize(description) {
 }
 
 /**
+ * The backend's `credits` / `avg_credits` columns are uniform placeholders;
+ * the real prices live in the tiered billing expression, whose coefficients
+ * are USD per 1M tokens. E credits are that price times `credits_per_usd`,
+ * averaged over a 75/25 input/output mix the same way the backend does.
+ */
+function parseTieredCoefficients(expr) {
+  if (typeof expr !== 'string') return null;
+  const start = expr.indexOf('tier(');
+  if (start === -1) return null;
+  let depth = 0;
+  let end = -1;
+  for (let index = start; index < expr.length; index += 1) {
+    if (expr[index] === '(') depth += 1;
+    else if (expr[index] === ')') {
+      depth -= 1;
+      if (depth === 0) {
+        end = index;
+        break;
+      }
+    }
+  }
+  if (end === -1) return null;
+  const head = expr.slice(start + 5, end);
+  const comma = head.indexOf(',');
+  const body = comma === -1 ? head : head.slice(comma + 1);
+  const coefficients = new Map();
+  const pattern = /\b(p|c|cr|cc|cc1h)\s*\*\s*([\d.]+)|\b([\d.]+)\s*\*\s*(p|c|cr|cc|cc1h)\b/g;
+  for (const match of body.matchAll(pattern)) {
+    const name = match[1] ?? match[4];
+    const value = Number(match[2] ?? match[3]);
+    if (Number.isFinite(value) && !coefficients.has(name)) coefficients.set(name, value);
+  }
+  return coefficients;
+}
+
+/** E prices for one pricing row; every field is null when the row carries none. */
+function creditsForPricingRow(row, creditsPerUsd) {
+  const empty = { avgCredits: null, inputE: null, outputE: null, cacheReadE: null, cacheWriteE: null };
+  if (Number(row.quota_type) === 1) {
+    const perCall = Number(row.credits);
+    return { ...empty, avgCredits: Number.isFinite(perCall) && perCall > 0 ? perCall : null };
+  }
+  if (row.billing_mode !== 'tiered_expr') return empty;
+  const coefficients = parseTieredCoefficients(row.billing_expr);
+  const input = coefficients?.get('p');
+  if (coefficients === null || !(Number(input) > 0)) return empty;
+  const toE = (value) => Math.round(value * creditsPerUsd * 100) / 100;
+  const output = coefficients.get('c');
+  // One cache-write line: the 5-minute tier, falling back to the 1h tier.
+  const cacheWrite = coefficients.get('cc') ?? coefficients.get('cc1h');
+  return {
+    avgCredits: Math.max(1, Math.round(creditsPerUsd * (0.75 * input + 0.25 * (output ?? input)))),
+    inputE: toE(input),
+    outputE: output === undefined ? null : toE(output),
+    cacheReadE: coefficients.has('cr') ? toE(coefficients.get('cr')) : null,
+    cacheWriteE: cacheWrite === undefined ? null : toE(cacheWrite),
+  };
+}
+
+/**
  * The account's model catalog, joined with public pricing metadata.
  * Falls back to the pricing rows for the account's group when the per-account
  * endpoint cannot answer, so a signed-in account always sees its models.
@@ -521,10 +581,12 @@ async function modelCatalog(session) {
     return modelCache.entries;
   }
 
-  const [pricing, usable] = await Promise.all([
+  const [pricing, usable, status] = await Promise.all([
     fetchPricing(),
     fetchUsableModels(session).catch(() => null),
+    fetchStatus().catch(() => null),
   ]);
+  const creditsPerUsd = status === null ? 500 : status.creditsPerUsd;
 
   const entries = [];
   for (const row of pricing.rows) {
@@ -553,9 +615,10 @@ async function modelCatalog(session) {
       maxTokens: maxTokensFor(contextWindow, description),
       quotaType: Number(row.quota_type) === 1 ? 1 : 0,
       credits: Number(row.credits) > 0 ? Number(row.credits) : 0,
-      avgCredits: Number(row.avg_credits) > 0 ? Number(row.avg_credits) : 0,
       completionRatio: Number(row.completion_ratio) > 0 ? Number(row.completion_ratio) : 0,
       billingMode: typeof row.billing_mode === 'string' ? row.billing_mode : '',
+      ...creditsForPricingRow(row, creditsPerUsd),
+      creditsPerUsd,
     });
   }
 
@@ -1280,7 +1343,10 @@ export function apply(ctx) {
             if (pathname === `${ROUTE_PREFIX}/models`) {
               const session = sessionOf(payload);
               if (session === null) throw new Error('尚未登录 EZCloud');
-              if (payload.refresh === true) modelCache = { key: '', at: 0, entries: [] };
+              if (payload.refresh === true) {
+                modelCache = { key: '', at: 0, entries: [] };
+                pricingCache = { at: 0, rows: [], vendors: new Map() };
+              }
               const entries = await modelCatalog(session);
               sendJson(response, 200, {
                 ok: true,
@@ -1294,6 +1360,11 @@ export function apply(ctx) {
                   quotaType: entry.quotaType,
                   credits: entry.credits,
                   avgCredits: entry.avgCredits,
+                  inputE: entry.inputE,
+                  outputE: entry.outputE,
+                  cacheReadE: entry.cacheReadE,
+                  cacheWriteE: entry.cacheWriteE,
+                  creditsPerUsd: entry.creditsPerUsd,
                   completionRatio: entry.completionRatio,
                   billingMode: entry.billingMode,
                   maxTokens: entry.maxTokens,

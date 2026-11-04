@@ -391,15 +391,49 @@ window.__ModuleLoader__.load({
       return String(Math.round(numeric * 10000) / 10000);
     }
 
-    /** `E 37,500/次` for per-call billing, `E 0.5/1M` for per-token billing. */
+    /**
+     * Row badge: the average E spend per 1M tokens (token-billed models) or per
+     * call (quota type 1). The number carries no suffix — the unit lives in the
+     * hover card, matching the EZSTART reference picker.
+     */
     function priceBadge(entry) {
       if (entry === null || typeof entry !== 'object') return '';
+      const value = formatPriceE(entry.avgCredits);
+      return value === '' ? '' : `E ${value}`;
+    }
+
+    function descriptionText(description) {
+      if (description === null || typeof description !== 'object') return '';
+      const language =
+        typeof document === 'undefined' || document.documentElement === undefined ? '' : document.documentElement.lang || '';
+      const zh = typeof description.zh === 'string' ? description.zh : '';
+      const en = typeof description.en === 'string' ? description.en : '';
+      return language.toLowerCase().startsWith('zh') ? zh || en : en || zh;
+    }
+
+    /** Everything the hover card shows, in display order. */
+    function cardRows(entry) {
+      if (entry === null || typeof entry !== 'object') return [];
+      const rows = [];
+      if (typeof entry.vendor === 'string' && entry.vendor !== '') rows.push({ label: '供应商', value: entry.vendor });
+      const intro = descriptionText(entry.description);
+      if (intro !== '') rows.push({ label: '模型介绍', value: intro });
       if (entry.quotaType === 1) {
-        const perMillion = formatPriceE(entry.credits);
-        return perMillion === '' ? '' : `E ${perMillion}/1M`;
+        const perCall = formatPriceE(entry.avgCredits);
+        rows.push({ label: '计费', value: `按次计费 · E ${perCall === '' ? '—' : perCall}` });
+        return rows;
       }
-      const perCall = formatPriceE(entry.avgCredits);
-      return perCall === '' ? '' : `E ${perCall}/次`;
+      if (entry.inputE === null && entry.outputE === null) return rows;
+      const cell = (label, value) => {
+        const text = formatPriceE(value);
+        return { label, value: text === '' ? '—' : `E ${text}` };
+      };
+      rows.push(cell('输入', entry.inputE));
+      rows.push(cell('输出', entry.outputE));
+      rows.push(cell('缓存读取', entry.cacheReadE));
+      rows.push(cell('缓存写入', entry.cacheWriteE));
+      rows.push({ label: '单位', value: 'E / 1M tokens' });
+      return rows;
     }
 
     /** Anchor the hover card on the row, flipping below when the top is tight. */
@@ -463,7 +497,6 @@ window.__ModuleLoader__.load({
 
     function cardLines(entry) {
       const lines = [];
-      if (typeof entry.vendor === 'string' && entry.vendor !== '') lines.push(entry.vendor);
       const size = [
         Number.isFinite(entry.contextWindow) && entry.contextWindow > 0 ? `上下文 ${Math.round(entry.contextWindow / 1000)}K` : '',
         Number.isFinite(entry.maxTokens) && entry.maxTokens > 0 ? `输出 ${Math.round(entry.maxTokens / 1000)}K` : '',
@@ -471,8 +504,6 @@ window.__ModuleLoader__.load({
         .filter((part) => part !== '')
         .join(' · ');
       if (size !== '') lines.push(size);
-      const badge = priceBadge(entry);
-      if (badge !== '') lines.push(`${badge}（参考价）`);
       return lines;
     }
 
@@ -530,10 +561,15 @@ window.__ModuleLoader__.load({
           'div',
           { 'data-ezagent-card': 'price', style: { ...LABEL_CARD_STYLE, left: card.left, top: card.top } },
           h('div', { key: 'name', style: { fontWeight: 600, marginBottom: '0.3em' } }, name),
-          cardLines(entry).map((line, index) => h('div', { key: `line-${index}` }, line)),
-          typeof entry.description === 'string' && entry.description !== ''
-            ? h('div', { key: 'description', style: { marginTop: '0.45em', opacity: 0.74 } }, entry.description)
-            : null,
+          cardLines(entry).map((line, index) => h('div', { key: `size-${index}`, style: { opacity: 0.72 } }, line)),
+          cardRows(entry).map((row, index) =>
+            h(
+              'div',
+              { key: `row-${index}`, style: { display: 'flex', gap: '0.6em', marginTop: '0.35em' } },
+              h('span', { key: 'label', style: { minWidth: '4.2em', opacity: 0.66 } }, row.label),
+              h('span', { key: 'value', style: { flex: 1, wordBreak: 'break-word' } }, row.value),
+            ),
+          ),
         ),
       );
     }
@@ -1285,6 +1321,8 @@ window.__ModuleLoader__.load({
         labelText,
         formatPriceE,
         priceBadge,
+        descriptionText,
+        cardRows,
         cardPosition,
         refreshLabelCatalog,
         forgetLabelCatalog,
