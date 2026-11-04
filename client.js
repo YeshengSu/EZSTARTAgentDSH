@@ -441,51 +441,35 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Card anchor. The card is portalled to `document.body`, so these are plain
-     * viewport coordinates: beside the menu on the right, mirrored to the left
-     * when the row sits near the window edge, and flipped below the row when
-     * there is no room above.
+     * Card geometry, derived from the menu it belongs to: the card hugs the
+     * menu's left edge (right edge of the card meets the menu's left edge) and
+     * its bottom rides on the menu's bottom, growing upward. `bottom` is used
+     * instead of `top` so the card can never be pushed past the window bottom,
+     * and `maxHeight` stops it from growing past the window top.
      */
-    function cardPosition(rect, height, viewportHeight, viewportWidth, width) {
-      const above = rect.top - 8 - height;
-      const below = rect.bottom + 8;
-      const limit = Number.isFinite(viewportHeight) ? Math.max(8, viewportHeight - height - 8) : below;
-      const top = above >= 8 ? above : Math.min(below, limit);
-      const left = Number.isFinite(viewportWidth) && Number.isFinite(width)
-        ? tipLeft(rect, width, viewportWidth)
-        : rect.left;
-      return { left, top };
-    }
-
-    /**
-     * Horizontal anchor: beside the menu on the right, falling back to its left,
-     * and clamped inside the viewport when neither side fits.
-     */
-    function tipLeft(rect, width, viewportWidth) {
+    function cardBox(menuRect, viewportWidth, viewportHeight, preferredWidth) {
       const margin = 8;
-      const maxLeft = Math.max(margin, viewportWidth - width - margin);
-      let left = rect.right + margin;
-      if (left + width > viewportWidth - margin) {
-        const mirrored = rect.left - width - margin;
-        left = mirrored >= margin ? mirrored : maxLeft;
-      }
-      return Math.max(margin, Math.min(left, maxLeft));
+      const width = Math.max(220, Math.min(preferredWidth, menuRect.left - margin * 2));
+      const left = Math.max(margin, menuRect.left - margin - width);
+      const bottom = Math.max(margin, viewportHeight - menuRect.bottom);
+      const maxHeight = Math.max(160, viewportHeight - bottom - margin);
+      return { left, bottom, maxHeight, width };
     }
 
-    /** Card box: fixed, above the row, and free to wrap despite the menu's nowrap. */
+    /** Card box: fixed, hugging the menu, free to wrap despite the menu's nowrap. */
     function cardBoxStyle(position) {
       return {
         ...LABEL_CARD_STYLE,
         left: position.left,
-        top: position.top,
+        bottom: position.bottom,
+        width: position.width,
+        maxHeight: position.maxHeight,
         whiteSpace: 'normal',
         wordBreak: 'break-word',
         overflowWrap: 'anywhere',
-        maxHeight: '60vh',
         overflow: 'hidden',
       };
     }
-
     async function refreshLabelCatalog() {
       const session = readSession();
       if (session === null) return labelCatalog;
@@ -583,17 +567,11 @@ window.__ModuleLoader__.load({
           style: LABEL_NAME_STYLE,
           onMouseEnter: (event) => {
             const node = event?.currentTarget;
-            const rect = node?.getBoundingClientRect?.();
-            if (rect === undefined || rect === null) return;
-            setCard(
-              cardPosition(
-                rect,
-                180,
-                typeof window === 'undefined' ? 0 : window.innerHeight,
-                typeof window === 'undefined' ? 0 : window.innerWidth,
-                CARD_WIDTH,
-              ),
-            );
+            if (node === null || node === undefined || typeof window === 'undefined') return;
+            const anchor = typeof node.closest === 'function' ? node.closest('[role="menu"]') : null;
+            const menuRect = (anchor ?? node).getBoundingClientRect?.();
+            if (menuRect === undefined || menuRect === null) return;
+            setCard(cardBox(menuRect, window.innerWidth, window.innerHeight, CARD_WIDTH));
           },
           onMouseLeave: () => setCard(null),
         },
@@ -1375,8 +1353,7 @@ window.__ModuleLoader__.load({
         priceBadge,
         descriptionText,
         cardRows,
-        cardPosition,
-        tipLeft,
+        cardBox,
         cardBoxStyle,
         refreshLabelCatalog,
         forgetLabelCatalog,
