@@ -366,9 +366,12 @@ window.__ModuleLoader__.load({
     const LABEL_PROVIDER = 'ezcloud';
     const LABEL_CACHE_MS = 5 * 60 * 1000;
     let labelCatalog = { at: 0, byId: new Map() };
+    /** One request serves every row that mounts while it is in flight. */
+    let labelCatalogPending = null;
 
     function forgetLabelCatalog() {
       labelCatalog = { at: 0, byId: new Map() };
+      labelCatalogPending = null;
     }
 
     function labelText(model) {
@@ -413,17 +416,25 @@ window.__ModuleLoader__.load({
       if (session === null) return labelCatalog;
       const now = Date.now();
       if (labelCatalog.byId.size > 0 && now - labelCatalog.at < LABEL_CACHE_MS) return labelCatalog;
-      try {
-        const models = await loadModels(session, false);
-        const byId = new Map();
-        for (const model of models) {
-          if (model !== null && typeof model === 'object' && typeof model.id === 'string') byId.set(model.id, model);
+      if (labelCatalogPending !== null) return labelCatalogPending;
+      labelCatalogPending = (async () => {
+        try {
+          const models = await loadModels(session, false);
+          const byId = new Map();
+          for (const model of models) {
+            if (model !== null && typeof model === 'object' && typeof model.id === 'string') byId.set(model.id, model);
+          }
+          labelCatalog = { at: Date.now(), byId };
+        } catch {
+          /* keep the previous snapshot: the badge is decoration, never a blocker */
         }
-        labelCatalog = { at: now, byId };
-      } catch {
-        /* keep the previous snapshot: the badge is decoration, never a blocker */
+        return labelCatalog;
+      })();
+      try {
+        return await labelCatalogPending;
+      } finally {
+        labelCatalogPending = null;
       }
-      return labelCatalog;
     }
 
     const LABEL_NAME_STYLE = { display: 'inline-flex', alignItems: 'center', gap: '0.4em', minWidth: 0 };
