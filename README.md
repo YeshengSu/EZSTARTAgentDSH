@@ -26,14 +26,19 @@ EZSTART Agent 的 DeepSeek Harness 插件：把 DSH 侧边栏品牌改成 **deep
 
 ### 使用者：安装
 
-**方式一：双击 install.bat（推荐，不需要命令行）**
+**方式一：双击安装（推荐，不需要命令行）**
 
-1. 把 `install.bat`、`install.ps1`、`EZAgent-<version>.tgz` 放在同一个文件夹。
-2. 完全退出 DeepSeek Harness（托盘图标也要退出）。
-3. 双击 `install.bat`，按窗口提示走完（窗口提示为英文）。
-4. 启动 DeepSeek Harness。
+Windows：把 `install.bat`、`install.ps1`、`EZAgent-<version>.tgz` 放在同一个文件夹，双击 `install.bat`。
 
-窗口会停留到按任意键，报错可以直接截图反馈。
+macOS：把 `install.command`、`install.sh`、`EZAgent-<version>.tgz` 放在同一个文件夹。从压缩包解出来后先补执行权限：
+
+```bash
+chmod +x install.command install.sh
+```
+
+然后双击 `install.command`；被 Gatekeeper 拦下时右键 → 打开。
+
+两种方式都要求先完全退出 DeepSeek Harness（Windows 连托盘图标一起退出），窗口会停留到按任意键，报错可以直接截图反馈。
 
 **方式二：图形界面**
 
@@ -56,6 +61,8 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -LocalOnly
 ```
 
+macOS 把命令换成 `bash install.sh`，`-LocalOnly` 换成 `--local-only`。
+
 脚本依次检查 tgz 是否存在、DSH 桌面版配置是否已初始化、应用是否已退出、`dsh` 命令是否可用；没有 `dsh` 时打印图形界面步骤。装完读取 profile 的 `dsh.profile.bundles` 确认已启用。
 
 > 安装后 `%USERPROFILE%\.dsh\profiles\desktop\package.json` 的 `dependencies` 与 `dsh.profile.bundles` 都会出现 `EZAgent`，无需手工编辑。
@@ -68,7 +75,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -LocalOnly
 npm run pack
 ```
 
-产出 `dist/`：`EZAgent-<version>.tgz` + `install.ps1` + `install.bat`，把整个目录压缩发给使用者即可。`npm run pack` 每次先清空 `dist`，保证里面只有当前版本；tgz 内容由 `files` 白名单决定。
+产出 `dist/`：`EZAgent-<version>.tgz` + `install.ps1` + `install.bat` + `install.sh` + `install.command`，把整个目录压缩发给使用者即可。`npm run pack` 每次先清空 `dist`，保证里面只有当前版本；tgz 内容由 `files` 白名单决定。
 
 ### 公开插件
 
